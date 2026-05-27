@@ -1,0 +1,31 @@
+# 环境变量和配置文件（可能包含 API 密钥）
+.env
+.env.local
+.env.*.local
+config.json
+config.js
+*.config.local.js
+secrets.json
+keys.json
+
+# 备份目录和记忆文件
+memory_backups/
+*.backup
+*.bak
+
+# 日志文件
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器和 IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
