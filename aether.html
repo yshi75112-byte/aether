@@ -1,0 +1,2096 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 助手 - 记忆聊天</title>
+    <style>
+        :root {
+            --bg: #fafaf5;
+            --ivory: #fefef9;
+            --white: #ffffff;
+            --card: #f8f6f0;
+            --border: #e8e4db;
+            --text: #2c2c28;
+            --text-secondary: #6b6b62;
+            --text-muted: #9a9a8f;
+            --accent: #3a3a34;
+            --accent-soft: #5c5c52;
+            --user-msg-bg: #f3f1ea;
+            --ai-msg-bg: #fefefb;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+            --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+            --radius-sm: 8px;
+            --radius: 14px;
+            --radius-lg: 20px;
+            --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            --font-sans: 'Inter', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui,
+                -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html {
+            font-size: 15px;
+            scroll-behavior: smooth;
+        }
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ========== 主容器 ========== */
+        .app-container {
+            display: flex;
+            width: 100%;
+            max-width: 1100px;
+            height: 100vh;
+            max-height: 900px;
+            background: var(--white);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+            position: relative;
+            margin: 0 8px;
+        }
+        @media (max-width: 768px) {
+            .app-container {
+                max-height: 100vh;
+                border-radius: 0;
+                margin: 0;
+                flex-direction: column;
+            }
+        }
+
+        /* ========== 侧边栏 - 记忆面板 ========== */
+        .sidebar {
+            width: 340px;
+            min-width: 340px;
+            background: var(--ivory);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: transform var(--transition), min-width var(--transition);
+            z-index: 10;
+        }
+        .sidebar.collapsed {
+            min-width: 0;
+            width: 0;
+            transform: translateX(-100%);
+            border-right: none;
+        }
+        @media (max-width: 768px) {
+            .sidebar {
+                position: absolute;
+                top: 0;
+                left: 0;
+                height: 100%;
+                width: 300px;
+                min-width: 300px;
+                z-index: 30;
+                border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+                box-shadow: var(--shadow-lg);
+            }
+            .sidebar.collapsed {
+                transform: translateX(-105%);
+            }
+        }
+        .sidebar-header {
+            padding: 20px 20px 14px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .sidebar-header h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--accent);
+            letter-spacing: 0.02em;
+        }
+        .sidebar-close {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--white);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            color: var(--text-secondary);
+            transition: all var(--transition);
+        }
+        .sidebar-close:hover {
+            background: #f0ede5;
+            color: var(--accent);
+        }
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .sidebar-content::-webkit-scrollbar {
+            width: 3px;
+        }
+        .sidebar-content::-webkit-scrollbar-thumb {
+            background: #d5d0c7;
+            border-radius: 10px;
+        }
+        .memory-section {
+            background: var(--white);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            transition: all var(--transition);
+        }
+        .memory-section h4 {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: var(--accent-soft);
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            letter-spacing: 0.03em;
+        }
+        .memory-section h4 .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+        .dot-short {
+            background: #c9b99a;
+        }
+        .dot-long {
+            background: #5c5c52;
+        }
+        .dot-volatile {
+            background: #d4a76a;
+        }
+        .memory-section .mem-item {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            padding: 4px 0;
+            border-bottom: 1px dotted #ece8df;
+            line-height: 1.4;
+        }
+        .memory-section .mem-item:last-child {
+            border-bottom: none;
+        }
+        .memory-section .mem-meta {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+        .memory-section .empty-hint {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+        .sidebar-footer {
+            padding: 10px 16px;
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .sidebar-footer button {
+            font-size: 0.7rem;
+            padding: 6px 12px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all var(--transition);
+            white-space: nowrap;
+        }
+        .sidebar-footer button:hover {
+            background: #f5f2eb;
+            color: var(--accent);
+            border-color: #ccc5b8;
+        }
+        .sidebar-footer button.danger {
+            color: #c47a6a;
+            border-color: #e8d5cf;
+        }
+        .sidebar-footer button.danger:hover {
+            background: #fdf5f2;
+            border-color: #c47a6a;
+            color: #b05a4a;
+        }
+
+        /* ========== 主聊天区 ========== */
+        .main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            background: var(--white);
+            position: relative;
+        }
+
+        /* 顶栏 */
+        .top-bar {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+            background: var(--ivory);
+        }
+        .menu-btn {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--white);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            transition: all var(--transition);
+            flex-shrink: 0;
+        }
+        .menu-btn:hover {
+            background: #f0ede5;
+            color: var(--accent);
+        }
+        .top-bar .ai-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+            min-width: 0;
+        }
+        /* AI头像容器 - 几何分散聚合动画 */
+        .ai-avatar-wrapper {
+            position: relative;
+            width: 42px;
+            height: 42px;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+        .ai-avatar-core {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 26px;
+            height: 26px;
+            background: var(--accent);
+            border-radius: 6px;
+            z-index: 2;
+            transition: all var(--transition);
+            /* 几何菱形效果 */
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+        }
+        .ai-avatar-fragments {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .fragment {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: var(--accent-soft);
+            border-radius: 2px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            transition: all 0.08s ease;
+            opacity: 0.7;
+        }
+        .fragment.f1 {
+            border-radius: 50%;
+            background: #6b6b5e;
+        }
+        .fragment.f2 {
+            clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+            border-radius: 0;
+            background: #55554b;
+        }
+        .fragment.f3 {
+            border-radius: 50%;
+            background: #78786a;
+        }
+        .fragment.f4 {
+            border-radius: 1px;
+            background: #4a4a40;
+        }
+        .fragment.f5 {
+            border-radius: 50%;
+            background: #6e6e60;
+        }
+        .fragment.f6 {
+            clip-path: polygon(0 0, 100% 0, 100% 100%, 0% 100%);
+            border-radius: 0;
+            background: #5a5a4f;
+        }
+        /* 思考动画 - 分散聚合 */
+        .ai-avatar-wrapper.thinking .fragment {
+            animation: disperseGather 1.4s ease-in-out infinite;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f1 {
+            animation-delay: 0s;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f2 {
+            animation-delay: 0.12s;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f3 {
+            animation-delay: 0.24s;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f4 {
+            animation-delay: 0.36s;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f5 {
+            animation-delay: 0.48s;
+        }
+        .ai-avatar-wrapper.thinking .fragment.f6 {
+            animation-delay: 0.6s;
+        }
+        .ai-avatar-wrapper.thinking .ai-avatar-core {
+            animation: pulseCore 1.4s ease-in-out infinite;
+        }
+        @keyframes disperseGather {
+            0%,
+            100% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 0.7;
+            }
+            30% {
+                transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.8);
+                opacity: 0.35;
+            }
+            60% {
+                transform: translate(-50%, -50%) scale(0.5);
+                opacity: 0.9;
+            }
+            80% {
+                transform: translate(calc(-50% + var(--dx2)), calc(-50% + var(--dy2))) scale(1.3);
+                opacity: 0.5;
+            }
+        }
+        @keyframes pulseCore {
+            0%,
+            100% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 1;
+            }
+            40% {
+                transform: translate(-50%, -50%) scale(1.08);
+                opacity: 0.85;
+            }
+            70% {
+                transform: translate(-50%, -50%) scale(0.94);
+                opacity: 1;
+            }
+        }
+        /* 为每个碎片设置不同的分散方向 */
+        .fragment.f1 {
+            --dx: 16px;
+            --dy: -14px;
+            --dx2: -10px;
+            --dy2: 8px;
+        }
+        .fragment.f2 {
+            --dx: -15px;
+            --dy: -10px;
+            --dx2: 12px;
+            --dy2: -6px;
+        }
+        .fragment.f3 {
+            --dx: 18px;
+            --dy: 6px;
+            --dx2: -8px;
+            --dy2: -10px;
+        }
+        .fragment.f4 {
+            --dx: -12px;
+            --dy: 14px;
+            --dx2: 6px;
+            --dy2: -12px;
+        }
+        .fragment.f5 {
+            --dx: 8px;
+            --dy: 16px;
+            --dx2: -14px;
+            --dy2: -4px;
+        }
+        .fragment.f6 {
+            --dx: -16px;
+            --dy: -6px;
+            --dx2: 14px;
+            --dy2: 10px;
+        }
+        .top-bar .ai-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: var(--accent);
+        }
+        .top-bar .ai-status {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+        }
+        .top-bar .ai-status.ready {
+            color: #8a9e7e;
+        }
+        .top-bar .ai-status.processing {
+            color: #c9a96e;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            50% {
+                opacity: 0.4;
+            }
+        }
+        .settings-btn {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--white);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            color: var(--text-secondary);
+            transition: all var(--transition);
+            flex-shrink: 0;
+        }
+        .settings-btn:hover {
+            background: #f0ede5;
+            color: var(--accent);
+        }
+
+        /* 消息区 */
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            scroll-behavior: smooth;
+        }
+        .messages-container::-webkit-scrollbar {
+            width: 4px;
+        }
+        .messages-container::-webkit-scrollbar-thumb {
+            background: #e0dbcf;
+            border-radius: 10px;
+        }
+        .message {
+            display: flex;
+            gap: 10px;
+            max-width: 85%;
+            animation: msgIn 0.35s ease-out;
+        }
+        @keyframes msgIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+        .message.ai {
+            align-self: flex-start;
+        }
+        .msg-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+        .message.user .msg-avatar {
+            background: #e8e4db;
+            color: var(--accent);
+            border-radius: 50%;
+            clip-path: none;
+        }
+        .message.ai .msg-avatar {
+            background: var(--accent);
+            color: #fff;
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+            font-size: 0.55rem;
+        }
+        .msg-bubble {
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 0.88rem;
+            line-height: 1.55;
+            word-break: break-word;
+            position: relative;
+        }
+        .message.user .msg-bubble {
+            background: var(--user-msg-bg);
+            border: 1px solid #e8e4db;
+            border-radius: var(--radius) 4px var(--radius) var(--radius);
+            color: var(--text);
+        }
+        .message.ai .msg-bubble {
+            background: var(--ai-msg-bg);
+            border: 1px solid #ece8df;
+            border-radius: 4px var(--radius) var(--radius) var(--radius);
+            color: var(--text);
+        }
+        .msg-bubble p {
+            margin: 0 0 6px;
+        }
+        .msg-bubble p:last-child {
+            margin-bottom: 0;
+        }
+        .msg-bubble code {
+            background: #f3f1ea;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+        }
+        .msg-bubble pre {
+            background: #f5f3ed;
+            padding: 10px 14px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            margin: 8px 0;
+            border: 1px solid var(--border);
+        }
+        .msg-time {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            margin-top: 3px;
+            padding: 0 4px;
+        }
+
+        /* 输入区 */
+        .input-area {
+            padding: 14px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--ivory);
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            flex-shrink: 0;
+        }
+        .input-area textarea {
+            flex: 1;
+            resize: none;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            font-family: var(--font-sans);
+            font-size: 0.88rem;
+            line-height: 1.5;
+            background: var(--white);
+            color: var(--text);
+            outline: none;
+            transition: all var(--transition);
+            min-height: 46px;
+            max-height: 160px;
+        }
+        .input-area textarea:focus {
+            border-color: #c5bfb2;
+            box-shadow: 0 0 0 3px rgba(120, 115, 100, 0.06);
+        }
+        .input-area textarea::placeholder {
+            color: #c5bfb2;
+        }
+        .send-btn {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            border: none;
+            background: var(--accent);
+            color: #fff;
+            cursor: pointer;
+            font-size: 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all var(--transition);
+            flex-shrink: 0;
+        }
+        .send-btn:hover {
+            background: #4a4a3e;
+            transform: scale(1.04);
+        }
+        .send-btn:disabled {
+            background: #c5bfb2;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .send-btn:active:not(:disabled) {
+            transform: scale(0.94);
+        }
+        .input-hint {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            text-align: right;
+            padding: 2px 20px 0;
+            background: var(--ivory);
+        }
+
+        /* ========== 设置弹窗 ========== */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(30, 30, 25, 0.4);
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+        .modal {
+            background: var(--white);
+            border-radius: var(--radius-lg);
+            padding: 28px 24px 20px;
+            width: 90%;
+            max-width: 440px;
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+        .modal h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--accent);
+        }
+        .modal label {
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            display: block;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+        .modal input,
+        .modal select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            font-size: 0.85rem;
+            font-family: var(--font-sans);
+            background: var(--ivory);
+            color: var(--text);
+            outline: none;
+            margin-bottom: 12px;
+            transition: all var(--transition);
+        }
+        .modal input:focus,
+        .modal select:focus {
+            border-color: #c5bfb2;
+            box-shadow: 0 0 0 3px rgba(120, 115, 100, 0.05);
+        }
+        .modal .btn-row {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 8px;
+        }
+        .modal button {
+            padding: 10px 20px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            cursor: pointer;
+            font-size: 0.82rem;
+            transition: all var(--transition);
+            font-family: var(--font-sans);
+        }
+        .modal button.primary {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+        }
+        .modal button.primary:hover {
+            background: #4a4a3e;
+        }
+        .modal button:hover {
+            background: #f5f2eb;
+        }
+        .modal .close-modal {
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal .close-modal:hover {
+            color: var(--accent);
+            background: #f5f2eb;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--accent);
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            z-index: 60;
+            animation: toastIn 0.3s ease, toastOut 0.3s ease 2.5s forwards;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+        @keyframes toastIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        @keyframes toastOut {
+            from {
+                opacity: 1;
+            }
+            to {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-10px);
+            }
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column;
+                height: 100vh;
+                max-height: 100vh;
+                border-radius: 0;
+            }
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: 0;
+                height: 100vh;
+                width: 280px;
+                min-width: 280px;
+                z-index: 40;
+                border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+                box-shadow: var(--shadow-lg);
+            }
+            .sidebar.collapsed {
+                transform: translateX(-105%);
+            }
+            .messages-container {
+                padding: 14px 12px;
+                gap: 10px;
+            }
+            .message {
+                max-width: 92%;
+            }
+            .msg-bubble {
+                font-size: 0.82rem;
+                padding: 10px 13px;
+            }
+            .input-area {
+                padding: 10px 12px;
+                gap: 8px;
+            }
+            .input-area textarea {
+                font-size: 0.82rem;
+                padding: 10px 12px;
+            }
+            .top-bar {
+                padding: 10px 14px;
+            }
+            .ai-avatar-wrapper {
+                width: 34px;
+                height: 34px;
+            }
+            .ai-avatar-core {
+                width: 20px;
+                height: 20px;
+            }
+            .fragment {
+                width: 6px;
+                height: 6px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-container" id="appContainer">
+        <!-- ==================== 侧边栏 - 记忆面板 ==================== -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h3>🧠 记忆系统</h3>
+                <button class="sidebar-close" id="sidebarClose" title="关闭面板">×</button>
+            </div>
+            <div class="sidebar-content" id="sidebarContent">
+                <!-- 短期记忆 -->
+                <div class="memory-section" id="memShort">
+                    <h4><span class="dot dot-short"></span>短期记忆（7天）</h4>
+                    <div class="empty-hint">暂无短期记忆</div>
+                </div>
+                <!-- 长期记忆 -->
+                <div class="memory-section" id="memLong">
+                    <h4><span class="dot dot-long"></span>长期记忆</h4>
+                    <div class="empty-hint">暂无长期记忆</div>
+                </div>
+                <!-- 波动记忆 -->
+                <div class="memory-section" id="memVolatile">
+                    <h4><span class="dot dot-volatile"></span>波动记忆</h4>
+                    <div class="empty-hint">暂无波动记忆</div>
+                </div>
+            </div>
+            <div class="sidebar-footer">
+                <button id="btnCleanExpired">清理过期记忆</button>
+                <button id="btnExportMem">导出记忆</button>
+                <button class="danger" id="btnClearAllMem">清空全部记忆</button>
+            </div>
+        </aside>
+
+        <!-- ==================== 主聊天区 ==================== -->
+        <div class="main-area">
+            <!-- 顶栏 -->
+            <header class="top-bar">
+                <button class="menu-btn" id="menuBtn" title="记忆面板">☰</button>
+                <div class="ai-info">
+                    <div class="ai-avatar-wrapper" id="aiAvatarWrapper">
+                        <div class="ai-avatar-core"></div>
+                        <div class="ai-avatar-fragments">
+                            <div class="fragment f1"></div>
+                            <div class="fragment f2"></div>
+                            <div class="fragment f3"></div>
+                            <div class="fragment f4"></div>
+                            <div class="fragment f5"></div>
+                            <div class="fragment f6"></div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="ai-name">AI 助手</div>
+                        <div class="ai-status ready" id="aiStatus">就绪</div>
+                    </div>
+                </div>
+                <button class="settings-btn" id="settingsBtn" title="设置">⚙</button>
+            </header>
+
+            <!-- 消息区 -->
+            <div class="messages-container" id="messagesContainer">
+                <div class="message ai">
+                    <div class="msg-avatar">AI</div>
+                    <div>
+                        <div class="msg-bubble">
+                            <p>你好，我是你的AI助手。我会记住我们对话中的关键信息。</p>
+                            <p>请先在设置中配置 <strong>DeepSeek API Key</strong>，然后我们就可以开始高效对话了。</p>
+                        </div>
+                        <div class="msg-time">刚刚</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 输入区 -->
+            <div class="input-hint" id="inputHint">Enter 发送 · Shift+Enter 换行</div>
+            <div class="input-area">
+                <textarea id="userInput" placeholder="输入消息..." rows="1"></textarea>
+                <button class="send-btn" id="sendBtn" title="发送">↑</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== 设置弹窗 ==================== -->
+    <div class="modal-overlay" id="settingsModal" style="display:none;">
+        <div class="modal">
+            <button class="close-modal" id="closeSettings">×</button>
+            <h3>⚙ 设置</h3>
+            <label for="apiKeyInput">DeepSeek API Key</label>
+            <input type="password" id="apiKeyInput" placeholder="sk-...">
+            <label for="apiBaseInput">API 基础地址（可选代理）</label>
+            <input type="text" id="apiBaseInput" placeholder="https://api.deepseek.com/v1">
+            <label for="modelSelect">模型</label>
+            <select id="modelSelect">
+                <option value="deepseek-chat">deepseek-chat</option>
+                <option value="deepseek-reasoner">deepseek-reasoner</option>
+            </select>
+            <label for="proxyInput">CORS 代理（可选，留空则直连）</label>
+            <input type="text" id="proxyInput" placeholder="例如：https://your-cors-proxy.com/">
+            <p style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">
+                如遇跨域问题，可使用本地代理或 Cloudflare Worker 代理
+            </p>
+            <label for="autoSaveToggle" style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+                <input type="checkbox" id="autoSaveToggle">
+                <span style="font-weight:500;">自动保存记忆</span>
+            </label>
+            <label for="autoSaveInterval" style="margin-top:8px;">自动保存间隔</label>
+            <select id="autoSaveInterval">
+                <option value="5">5分钟</option>
+                <option value="10">10分钟</option>
+                <option value="15">15分钟</option>
+                <option value="30">30分钟</option>
+                <option value="60">1小时</option>
+            </select>
+            <p style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">
+                自动将记忆导出到JSON文件（保存到浏览器下载目录）
+            </p>
+            <div class="btn-row">
+                <button id="cancelSettings">取消</button>
+                <button class="primary" id="saveSettings">保存设置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast容器 -->
+    <div id="toastContainer"></div>
+
+    <script>
+        (function() {
+            // ==================== DOM引用 ====================
+            const $ = (sel) => document.querySelector(sel);
+            const $$ = (sel) => document.querySelectorAll(sel);
+
+            const appContainer = $('#appContainer');
+            const sidebar = $('#sidebar');
+            const sidebarContent = $('#sidebarContent');
+            const sidebarClose = $('#sidebarClose');
+            const menuBtn = $('#menuBtn');
+            const messagesContainer = $('#messagesContainer');
+            const userInput = $('#userInput');
+            const sendBtn = $('#sendBtn');
+            const aiAvatarWrapper = $('#aiAvatarWrapper');
+            const aiStatus = $('#aiStatus');
+            const settingsBtn = $('#settingsBtn');
+            const settingsModal = $('#settingsModal');
+            const closeSettings = $('#closeSettings');
+            const cancelSettings = $('#cancelSettings');
+            const saveSettings = $('#saveSettings');
+            const apiKeyInput = $('#apiKeyInput');
+            const apiBaseInput = $('#apiBaseInput');
+            const modelSelect = $('#modelSelect');
+            const proxyInput = $('#proxyInput');
+            const autoSaveToggle = $('#autoSaveToggle');
+            const autoSaveInterval = $('#autoSaveInterval');
+            const inputHint = $('#inputHint');
+            const toastContainer = $('#toastContainer');
+            const btnCleanExpired = $('#btnCleanExpired');
+            const btnExportMem = $('#btnExportMem');
+            const btnClearAllMem = $('#btnClearAllMem');
+
+            // ==================== 状态 ====================
+            let isProcessing = false;
+            let conversationHistory = []; // 当前会话的消息历史（用于API）
+            const MAX_HISTORY_MESSAGES = 40; // 最多保留最近40条消息
+            let autoSaveTimer = null; // 自动保存定时器
+
+            // ==================== 存储键 ====================
+            const STORAGE_KEYS = {
+                SHORT_TERM: 'mem_short_term',
+                LONG_TERM: 'mem_long_term',
+                VOLATILE: 'mem_volatile',
+                SETTINGS: 'app_settings',
+                CHAT_HISTORY: 'chat_history_cache',
+            };
+
+            // ==================== 记忆系统 ====================
+            class MemorySystem {
+                constructor() {
+                    this.loadAll();
+                }
+
+                loadAll() {
+                    this.shortTerm = this._loadJSON(STORAGE_KEYS.SHORT_TERM, { entries: [] });
+                    this.longTerm = this._loadJSON(STORAGE_KEYS.LONG_TERM, {
+                        expenses: [],
+                        preferences: [],
+                        basicInfo: { age: null, job: null, pets: [], tools: [] },
+                        aiLearning: [],
+                    });
+                    this.volatile = this._loadJSON(STORAGE_KEYS.VOLATILE, {
+                        plans: [],
+                        temporaryEvents: [],
+                    });
+                    this._cleanExpired();
+                }
+
+                _loadJSON(key, defaultVal) {
+                    try {
+                        const raw = localStorage.getItem(key);
+                        if (raw) return JSON.parse(raw);
+                    } catch (e) { /* ignore */ }
+                    return defaultVal;
+                }
+
+                _saveAll() {
+                    try {
+                        localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
+                        localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
+                        localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                    } catch (e) {
+                        console.warn('记忆存储空间不足', e);
+                        this._cleanExpired();
+                        try {
+                            localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
+                            localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
+                            localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                        } catch (e2) {
+                            console.error('记忆存储失败', e2);
+                        }
+                    }
+                }
+
+                /** 清理过期记忆 */
+                _cleanExpired() {
+                    const now = Date.now();
+                    const sevenDays = 7 * 24 * 60 * 60 * 1000;
+
+                    // 短期记忆：7天过期
+                    this.shortTerm.entries = (this.shortTerm.entries || []).filter(e => {
+                        return (now - (e.timestamp || 0)) < sevenDays;
+                    });
+
+                    // 波动记忆 - 临时事件：按估计过期时间清理
+                    this.volatile.temporaryEvents = (this.volatile.temporaryEvents || []).filter(e => {
+                        if (e.estimatedExpiry) return now < e.estimatedExpiry;
+                        return true; // 无过期时间的保留
+                    });
+
+                    // 波动记忆 - 计划：不过期，等待用户主动删除
+                    // （计划类记忆不自动过期，由用户指示删除）
+                }
+
+                /** 短期记忆 - 添加条目 */
+                addShortTerm(content, source = 'dialogue') {
+                    // 提取关键信息后存储（精简）
+                    const trimmed = this._extractKeyInfo(content);
+                    if (!trimmed || trimmed.length < 2) return;
+
+                    // 检查重复
+                    const existing = this.shortTerm.entries.find(e =>
+                        this._similarity(e.content, trimmed) > 0.75
+                    );
+                    if (existing) {
+                        // 整合：更新时间和内容
+                        existing.content = this._mergeContent(existing.content, trimmed);
+                        existing.timestamp = Date.now();
+                        existing.expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+                    } else {
+                        this.shortTerm.entries.push({
+                            content: trimmed,
+                            timestamp: Date.now(),
+                            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+                            source,
+                        });
+                    }
+                    // 限制短期记忆条目数
+                    if (this.shortTerm.entries.length > 100) {
+                        this.shortTerm.entries.sort((a, b) => b.timestamp - a.timestamp);
+                        this.shortTerm.entries = this.shortTerm.entries.slice(0, 80);
+                    }
+                    this._saveAll();
+                }
+
+                /** 长期记忆 - 添加开销 */
+                addExpense(amount, category, description) {
+                    if (!amount && !description) return;
+                    const entry = {
+                        amount: amount || null,
+                        category: category || '未分类',
+                        description: description || '',
+                        timestamp: Date.now(),
+                        dateStr: new Date().toISOString().split('T')[0],
+                    };
+                    // 检查重复（同一天相同金额和描述）
+                    const dup = this.longTerm.expenses.find(e =>
+                        e.dateStr === entry.dateStr &&
+                        e.amount === entry.amount &&
+                        this._similarity(e.description, entry.description) > 0.8
+                    );
+                    if (!dup) {
+                        this.longTerm.expenses.push(entry);
+                        if (this.longTerm.expenses.length > 200) {
+                            this.longTerm.expenses = this.longTerm.expenses.slice(-150);
+                        }
+                    }
+                    this._saveAll();
+                }
+
+                /** 长期记忆 - 添加用户喜好 */
+                addPreference(category, detail) {
+                    if (!detail) return;
+                    const entry = { category: category || '通用', detail, timestamp: Date.now() };
+                    const dup = this.longTerm.preferences.find(p =>
+                        p.category === entry.category && this._similarity(p.detail, entry.detail) > 0.7
+                    );
+                    if (dup) {
+                        dup.detail = entry.detail; // 覆盖
+                        dup.timestamp = Date.now();
+                    } else {
+                        this.longTerm.preferences.push(entry);
+                    }
+                    this._saveAll();
+                }
+
+                /** 长期记忆 - 更新基本信息 */
+                updateBasicInfo(field, value) {
+                    if (field === 'pets' && typeof value === 'object') {
+                        // value: {name, type, action: 'add'|'remove'}
+                        if (value.action === 'add' && value.name) {
+                            const exists = this.longTerm.basicInfo.pets.find(p =>
+                                p.name === value.name && p.type === value.type
+                            );
+                            if (!exists) this.longTerm.basicInfo.pets.push({ name: value.name, type: value
+                                    .type || '未知' });
+                        } else if (value.action === 'remove' && value.name) {
+                            this.longTerm.basicInfo.pets = this.longTerm.basicInfo.pets.filter(p =>
+                                p.name !== value.name
+                            );
+                        }
+                    } else if (field === 'tools' && typeof value === 'object') {
+                        if (value.action === 'add' && value.tool) {
+                            if (!this.longTerm.basicInfo.tools.includes(value.tool)) {
+                                this.longTerm.basicInfo.tools.push(value.tool);
+                            }
+                        } else if (value.action === 'remove' && value.tool) {
+                            this.longTerm.basicInfo.tools = this.longTerm.basicInfo.tools.filter(t =>
+                                t !== value.tool
+                            );
+                        }
+                    } else {
+                        this.longTerm.basicInfo[field] = value;
+                    }
+                    this._saveAll();
+                }
+
+                /** 长期记忆 - AI学习板块 */
+                addAiLearning(topic, content) {
+                    if (!topic || !content) return;
+                    const entry = { topic, content, timestamp: Date.now() };
+                    const dup = this.longTerm.aiLearning.find(l =>
+                        this._similarity(l.topic, topic) > 0.7
+                    );
+                    if (dup) {
+                        dup.content = this._mergeContent(dup.content, content);
+                        dup.timestamp = Date.now();
+                    } else {
+                        this.longTerm.aiLearning.push(entry);
+                    }
+                    if (this.longTerm.aiLearning.length > 50) {
+                        this.longTerm.aiLearning = this.longTerm.aiLearning.slice(-40);
+                    }
+                    this._saveAll();
+                }
+
+                /** 波动记忆 - 添加计划 */
+                addPlan(type, content) {
+                    const entry = {
+                        type: type || '其他',
+                        content,
+                        createdAt: Date.now(),
+                        deleteCondition: 'user_indicated',
+                    };
+                    // 检查重复
+                    const dup = this.volatile.plans.find(p =>
+                        p.type === entry.type && this._similarity(p.content, entry.content) > 0.7
+                    );
+                    if (dup) {
+                        dup.content = entry.content;
+                        dup.createdAt = Date.now();
+                    } else {
+                        this.volatile.plans.push(entry);
+                    }
+                    if (this.volatile.plans.length > 30) {
+                        this.volatile.plans = this.volatile.plans.slice(-20);
+                    }
+                    this._saveAll();
+                }
+
+                /** 波动记忆 - 添加临时事件 */
+                addTemporaryEvent(content, estimatedExpiry) {
+                    const entry = {
+                        content,
+                        createdAt: Date.now(),
+                        estimatedExpiry: estimatedExpiry || null,
+                    };
+                    this.volatile.temporaryEvents.push(entry);
+                    if (this.volatile.temporaryEvents.length > 50) {
+                        this.volatile.temporaryEvents = this.volatile.temporaryEvents.slice(-35);
+                    }
+                    this._saveAll();
+                }
+
+                /** 删除波动记忆中的计划 */
+                removePlan(indexOrContent) {
+                    if (typeof indexOrContent === 'number') {
+                        this.volatile.plans.splice(indexOrContent, 1);
+                    } else {
+                        this.volatile.plans = this.volatile.plans.filter(p =>
+                            !p.content.includes(indexOrContent)
+                        );
+                    }
+                    this._saveAll();
+                }
+
+                /** 删除波动记忆中的临时事件 */
+                removeTemporaryEvent(indexOrContent) {
+                    if (typeof indexOrContent === 'number') {
+                        this.volatile.temporaryEvents.splice(indexOrContent, 1);
+                    } else {
+                        this.volatile.temporaryEvents = this.volatile.temporaryEvents.filter(e =>
+                            !e.content.includes(indexOrContent)
+                        );
+                    }
+                    this._saveAll();
+                }
+
+                /** 用户否定时修改记忆 */
+                handleUserNegation(negatedTopic) {
+                    // 在短期记忆中查找并移除相关内容
+                    this.shortTerm.entries = this.shortTerm.entries.filter(e =>
+                        !e.content.includes(negatedTopic)
+                    );
+                    // 在长期记忆的喜好中查找
+                    this.longTerm.preferences = this.longTerm.preferences.filter(p =>
+                        !p.detail.includes(negatedTopic) && !p.category.includes(negatedTopic)
+                    );
+                    // 在AI学习中查找
+                    this.longTerm.aiLearning = this.longTerm.aiLearning.filter(l =>
+                        !l.topic.includes(negatedTopic) && !l.content.includes(negatedTopic)
+                    );
+                    // 在波动记忆计划中查找
+                    this.volatile.plans = this.volatile.plans.filter(p =>
+                        !p.content.includes(negatedTopic)
+                    );
+                    this._saveAll();
+                }
+
+                /** 提取关键信息（精简） */
+                _extractKeyInfo(text) {
+                    if (!text) return '';
+                    // 去除过短或无明显信息的内容
+                    let cleaned = text.replace(/[嗯啊哦诶嘿哈呀]+/g, '').trim();
+                    if (cleaned.length < 3) return cleaned;
+                    // 限制长度
+                    if (cleaned.length > 300) cleaned = cleaned.substring(0, 280) + '...';
+                    return cleaned;
+                }
+
+                /** 简单相似度检测 */
+                _similarity(a, b) {
+                    if (!a || !b) return 0;
+                    const shorter = a.length < b.length ? a : b;
+                    const longer = a.length < b.length ? b : a;
+                    if (shorter.length === 0) return 0;
+                    let matches = 0;
+                    const wordsA = new Set(shorter.split(/[\s,，。！？、]+/).filter(w => w.length > 1));
+                    const wordsB = longer.split(/[\s,，。！？、]+/).filter(w => w.length > 1);
+                    for (const w of wordsB) {
+                        if (wordsA.has(w)) matches++;
+                    }
+                    return wordsA.size > 0 ? matches / Math.max(wordsA.size, wordsB.length) : 0;
+                }
+
+                /** 合并内容 */
+                _mergeContent(oldContent, newContent) {
+                    if (newContent.length > oldContent.length) return newContent;
+                    if (oldContent.includes(newContent)) return oldContent;
+                    return oldContent + '；' + newContent;
+                }
+
+                /** 获取记忆摘要（用于系统提示） */
+                getMemorySummary() {
+                    const parts = [];
+                    // 长期记忆 - 基本信息
+                    const bi = this.longTerm.basicInfo;
+                    const biParts = [];
+                    if (bi.age) biParts.push(`年龄:${bi.age}`);
+                    if (bi.job) biParts.push(`工作:${bi.job}`);
+                    if (bi.pets && bi.pets.length > 0) {
+                        biParts.push('宠物:' + bi.pets.map(p => `${p.name}(${p.type})`).join(', '));
+                    }
+                    if (bi.tools && bi.tools.length > 0) {
+                        biParts.push('工具:' + bi.tools.join(', '));
+                    }
+                    if (biParts.length > 0) parts.push('【用户基本信息】' + biParts.join('；'));
+
+                    // 长期记忆 - 喜好
+                    if (this.longTerm.preferences.length > 0) {
+                        const prefStr = this.longTerm.preferences
+                            .slice(-10)
+                            .map(p => `[${p.category}]${p.detail}`)
+                            .join('；');
+                        parts.push('【用户喜好】' + prefStr);
+                    }
+
+                    // 长期记忆 - AI学习
+                    if (this.longTerm.aiLearning.length > 0) {
+                        const learnStr = this.longTerm.aiLearning
+                            .slice(-8)
+                            .map(l => `[${l.topic}]${l.content}`)
+                            .join('；');
+                        parts.push('【AI已学习内容】' + learnStr);
+                    }
+
+                    // 短期记忆（最近）
+                    const recentShort = (this.shortTerm.entries || [])
+                        .slice(-15)
+                        .map(e => e.content)
+                        .join('；');
+                    if (recentShort) parts.push('【近期对话要点】' + recentShort);
+
+                    // 波动记忆 - 计划
+                    if (this.volatile.plans.length > 0) {
+                        const planStr = this.volatile.plans
+                            .map(p => `[${p.type}]${p.content}`)
+                            .join('；');
+                        parts.push('【活跃计划】' + planStr);
+                    }
+
+                    // 波动记忆 - 临时事件
+                    const activeTemp = (this.volatile.temporaryEvents || [])
+                        .filter(e => !e.estimatedExpiry || Date.now() < e.estimatedExpiry)
+                        .slice(-8)
+                        .map(e => e.content)
+                        .join('；');
+                    if (activeTemp) parts.push('【当前临时事件】' + activeTemp);
+
+                    return parts.length > 0 ? parts.join('\n') : '暂无存储记忆';
+                }
+
+                /** 清空所有记忆 */
+                clearAll() {
+                    this.shortTerm = { entries: [] };
+                    this.longTerm = { expenses: [], preferences: [], basicInfo: { age: null, job: null,
+                            pets: [], tools: [] }, aiLearning: [] };
+                    this.volatile = { plans: [], temporaryEvents: [] };
+                    this._saveAll();
+                }
+
+                /** 导出记忆 */
+                exportData() {
+                    return {
+                        shortTerm: this.shortTerm,
+                        longTerm: this.longTerm,
+                        volatile: this.volatile,
+                        exportedAt: new Date().toISOString(),
+                    };
+                }
+            }
+
+            // 初始化记忆系统
+            const memorySystem = new MemorySystem();
+
+            // ==================== 设置管理 ====================
+            function loadSettings() {
+                try {
+                    const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+                    if (raw) return JSON.parse(raw);
+                } catch (e) { /* ignore */ }
+                return {
+                    apiKey: '',
+                    apiBase: 'https://api.deepseek.com/v1',
+                    model: 'deepseek-chat',
+                    proxy: '',
+                    autoSave: false,
+                    autoSaveInterval: 10,
+                };
+            }
+
+            function persistSettings(settings) {
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+            }
+
+            let appSettings = loadSettings();
+
+            function populateSettingsForm() {
+                apiKeyInput.value = appSettings.apiKey || '';
+                apiBaseInput.value = appSettings.apiBase || 'https://api.deepseek.com/v1';
+                modelSelect.value = appSettings.model || 'deepseek-chat';
+                proxyInput.value = appSettings.proxy || '';
+                autoSaveToggle.checked = appSettings.autoSave || false;
+                autoSaveInterval.value = appSettings.autoSaveInterval || 10;
+            }
+
+            // ==================== Toast ====================
+            function showToast(msg, duration = 2800) {
+                const toast = document.createElement('div');
+                toast.className = 'toast';
+                toast.textContent = msg;
+                toastContainer.appendChild(toast);
+                setTimeout(() => {
+                    if (toast.parentNode) toast.parentNode.removeChild(toast);
+                }, duration + 400);
+            }
+
+            // ==================== AI头像动画 ====================
+            function setThinkingState(thinking) {
+                if (thinking) {
+                    aiAvatarWrapper.classList.add('thinking');
+                    aiStatus.textContent = '思考中...';
+                    aiStatus.className = 'ai-status processing';
+                } else {
+                    aiAvatarWrapper.classList.remove('thinking');
+                    aiStatus.textContent = '就绪';
+                    aiStatus.className = 'ai-status ready';
+                }
+            }
+
+            // ==================== 渲染消息 ====================
+            function renderMessage(role, content, timestamp = null) {
+                const msgDiv = document.createElement('div');
+                msgDiv.className = `message ${role}`;
+                const avatarText = role === 'user' ? 'U' : 'AI';
+                const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit',
+                    minute: '2-digit' }) : new Date().toLocaleTimeString('zh-CN', { hour: '2-digit',
+                    minute: '2-digit' });
+
+                // 处理内容中的记忆更新标记
+                let displayContent = content;
+                const memUpdateMatch = content.match(/<!--MEMORY_UPDATE:(.*?)-->/s);
+                if (memUpdateMatch) {
+                    displayContent = content.replace(/<!--MEMORY_UPDATE:.*?-->/gs, '').trim();
+                    // 处理记忆更新
+                    try {
+                        const memData = JSON.parse(memUpdateMatch[1]);
+                        processMemoryUpdate(memData);
+                    } catch (e) {
+                        console.warn('记忆更新解析失败', e);
+                    }
+                }
+
+                // 简单的Markdown处理
+                const formattedContent = formatMessageContent(displayContent);
+
+                msgDiv.innerHTML = `
+                    <div class="msg-avatar">${avatarText}</div>
+                    <div>
+                        <div class="msg-bubble">${formattedContent}</div>
+                        <div class="msg-time">${timeStr}</div>
+                    </div>
+                `;
+                messagesContainer.appendChild(msgDiv);
+                scrollToBottom();
+                return msgDiv;
+            }
+
+            function formatMessageContent(text) {
+                if (!text) return '';
+                // 转义HTML
+                let escaped = text
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+                // 代码块
+                escaped = escaped.replace(/```(\w*)\n?([\s\S]*?)```/g,
+                    '<pre><code>$2</code></pre>');
+                // 行内代码
+                escaped = escaped.replace(/`([^`]+)`/g, '<code>$1</code>');
+                // 粗体
+                escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                // 段落
+                escaped = escaped.replace(/\n\n/g, '</p><p>');
+                escaped = escaped.replace(/\n/g, '<br>');
+                if (!escaped.startsWith('<p>') && !escaped.startsWith('<pre>')) {
+                    escaped = '<p>' + escaped + '</p>';
+                }
+                return escaped;
+            }
+
+            function scrollToBottom() {
+                requestAnimationFrame(() => {
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                });
+            }
+
+            // ==================== 处理记忆更新指令 ====================
+            function processMemoryUpdate(memData) {
+                if (!memData) return;
+
+                if (memData.shortTerm) {
+                    const items = Array.isArray(memData.shortTerm) ? memData.shortTerm : [memData.shortTerm];
+                    items.forEach(item => {
+                        if (item && item.content) memorySystem.addShortTerm(item.content, 'ai_extracted');
+                    });
+                }
+                if (memData.expense) {
+                    const exp = memData.expense;
+                    memorySystem.addExpense(exp.amount, exp.category, exp.description);
+                }
+                if (memData.preference) {
+                    const pref = memData.preference;
+                    memorySystem.addPreference(pref.category, pref.detail);
+                }
+                if (memData.basicInfo) {
+                    const bi = memData.basicInfo;
+                    Object.keys(bi).forEach(key => {
+                        if (bi[key] !== undefined && bi[key] !== null) {
+                            memorySystem.updateBasicInfo(key, bi[key]);
+                        }
+                    });
+                }
+                if (memData.aiLearning) {
+                    const learn = memData.aiLearning;
+                    memorySystem.addAiLearning(learn.topic, learn.content);
+                }
+                if (memData.plan) {
+                    const plan = memData.plan;
+                    memorySystem.addPlan(plan.type, plan.content);
+                }
+                if (memData.temporaryEvent) {
+                    const te = memData.temporaryEvent;
+                    memorySystem.addTemporaryEvent(te.content, te.estimatedExpiry || null);
+                }
+                if (memData.removePlan) {
+                    memorySystem.removePlan(memData.removePlan);
+                }
+                if (memData.removeTemporaryEvent) {
+                    memorySystem.removeTemporaryEvent(memData.removeTemporaryEvent);
+                }
+                if (memData.userNegation) {
+                    memorySystem.handleUserNegation(memData.userNegation);
+                }
+                // 更新侧边栏
+                updateMemoryPanel();
+            }
+
+            // ==================== 构建系统提示 ====================
+            function buildSystemPrompt() {
+                const memorySummary = memorySystem.getMemorySummary();
+                return `你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。在用户明显犯错或自相矛盾时可以小小反击（增加活人感），但保持总体建设性。
+
+        ## 回复风格要求
+        - 简约，直接给答案，不铺垫
+        - 务实，提高用户行动能力
+        - 可偶尔毒舌反击但保持有用
+        - 不要过度热情，保持专业距离
+
+        ## 记忆系统
+        你有一个多层记忆系统。以下是已存储的记忆：
+        ${memorySummary}
+
+        ## 记忆更新规则
+        在每次回复末尾，如果需要更新记忆，请添加一个不可见的记忆更新标记。格式：
+        <!--MEMORY_UPDATE:{"shortTerm":[{"content":"提取的关键信息"}],"expense":{"amount":数字,"category":"类别","description":"描述"},"preference":{"category":"类别","detail":"具体内容"},"basicInfo":{"age":数字,"job":"职业"},"aiLearning":{"topic":"主题","content":"学习内容"},"plan":{"type":"学习计划/健康计划/其他","content":"计划内容"},"temporaryEvent":{"content":"事件内容","estimatedExpiry":过期时间戳},"removePlan":"要删除的计划关键词","userNegation":"用户否定的主题"}-->
+
+        ## 记忆类型说明
+        1. **短期记忆**：日常对话中的关键信息，保留7天。需精简提取后存储。
+        2. **长期记忆**：
+           - 开销（必须带时间戳）
+           - 用户喜好
+           - 用户基本信息（年龄、工作、宠物名称类型、拥有的工具等）
+           - AI学习板块：当用户主动要求你学习某事时，将核心内容记录到此
+        3. **波动记忆**：
+           - 计划类：学习计划、健康计划等，用户可指示删除
+           - 临时事件：现实中不会长时间存在的事件，需估计过期时间
+        4. **记忆自清洁**：重复信息整合，冲突信息用新覆盖旧（不确定时询问用户）
+
+        ## 信息提取规则
+        - 不允许发散思维，没有明确描述不允许贴标签
+        - 用户明确否定时，主动修改或删除相关记忆
+        - 当用户提到计划类话题时，主动询问是否需要拟定策划案
+
+        ## 当前时间
+        ${new Date().toISOString()}
+
+        请根据以上设定回复用户。保持简约高效。`;
+            }
+
+            // ==================== 调用DeepSeek API ====================
+            async function callDeepSeekAPI(messages) {
+                const settings = loadSettings();
+                if (!settings.apiKey) {
+                    throw new Error('请先设置DeepSeek API Key');
+                }
+
+                let apiUrl = (settings.apiBase || 'https://api.deepseek.com/v1').replace(/\/+$/, '') +
+                    '/chat/completions';
+                if (settings.proxy) {
+                    apiUrl = settings.proxy.replace(/\/+$/, '') + '?url=' + encodeURIComponent(apiUrl);
+                }
+
+                const requestBody = {
+                    model: settings.model || 'deepseek-chat',
+                    messages: messages,
+                    temperature: 0.7,
+                    max_tokens: 2048,
+                    stream: false,
+                };
+
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${settings.apiKey}`,
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text().catch(() => '未知错误');
+                    if (response.status === 401) throw new Error('API Key无效，请检查设置');
+                    if (response.status === 429) throw new Error('请求过于频繁，请稍后再试');
+                    throw new Error(`API错误 (${response.status}): ${errText.substring(0,200)}`);
+                }
+
+                const data = await response.json();
+                if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+                    throw new Error('API返回格式异常');
+                }
+                return data.choices[0].message.content;
+            }
+
+            // ==================== 发送消息 ====================
+            async function sendMessage() {
+                if (isProcessing) return;
+                const userText = userInput.value.trim();
+                if (!userText) return;
+
+                const settings = loadSettings();
+                if (!settings.apiKey) {
+                    showToast('⚠ 请先在设置中配置API Key');
+                    openSettings();
+                    return;
+                }
+
+                // 禁用输入
+                isProcessing = true;
+                sendBtn.disabled = true;
+                userInput.disabled = true;
+                setThinkingState(true);
+
+                // 渲染用户消息
+                renderMessage('user', userText);
+                const userMsgForHistory = { role: 'user', content: userText };
+                conversationHistory.push(userMsgForHistory);
+                if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
+                    conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
+                }
+
+                // 也在短期记忆中记录
+                memorySystem.addShortTerm(userText, 'user_message');
+
+                // 清空输入
+                userInput.value = '';
+                userInput.style.height = 'auto';
+                updateMemoryPanel();
+
+                // 构建API消息
+                const systemPrompt = buildSystemPrompt();
+                const apiMessages = [
+                    { role: 'system', content: systemPrompt },
+                    ...conversationHistory.slice(-30),
+                ];
+
+                // 创建AI消息占位
+                const aiMsgPlaceholder = document.createElement('div');
+                aiMsgPlaceholder.className = 'message ai';
+                aiMsgPlaceholder.innerHTML = `
+                    <div class="msg-avatar">AI</div>
+                    <div>
+                        <div class="msg-bubble"><p style="color:var(--text-muted);">思考中...</p></div>
+                        <div class="msg-time">...</div>
+                    </div>
+                `;
+                messagesContainer.appendChild(aiMsgPlaceholder);
+                scrollToBottom();
+
+                try {
+                    const aiResponse = await callDeepSeekAPI(apiMessages);
+
+                    // 移除占位
+                    if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
+
+                    // 渲染AI回复（会自动处理记忆更新标记）
+                    renderMessage('ai', aiResponse);
+                    const aiMsgForHistory = { role: 'assistant', content: aiResponse.replace(
+                            /<!--MEMORY_UPDATE:.*?-->/gs, '').trim() };
+                    conversationHistory.push(aiMsgForHistory);
+                    if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
+                        conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
+                    }
+
+                    // 同时将AI回复的关键信息存入短期记忆
+                    const cleanResponse = aiResponse.replace(/<!--MEMORY_UPDATE:.*?-->/gs, '').trim();
+                    if (cleanResponse.length > 10) {
+                        memorySystem.addShortTerm('AI回复要点: ' + cleanResponse.substring(0, 200),
+                        'ai_response');
+                    }
+
+                    updateMemoryPanel();
+                } catch (error) {
+                    if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
+                    const errorMsg = error.message || '未知错误';
+                    renderMessage('ai', '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。');
+                    console.error('API调用失败:', error);
+                } finally {
+                    isProcessing = false;
+                    sendBtn.disabled = false;
+                    userInput.disabled = false;
+                    setThinkingState(false);
+                    userInput.focus();
+                    updateMemoryPanel();
+                }
+            }
+
+            // ==================== 更新记忆面板 ====================
+            function updateMemoryPanel() {
+                const memShort = $('#memShort');
+                const memLong = $('#memLong');
+                const memVolatile = $('#memVolatile');
+
+                // 短期记忆
+                const shortEntries = (memorySystem.shortTerm.entries || []).slice(-20).reverse();
+                if (shortEntries.length === 0) {
+                    memShort.innerHTML =
+                        '<h4><span class="dot dot-short"></span>短期记忆（7天）</h4><div class="empty-hint">暂无短期记忆</div>';
+                } else {
+                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortEntries.length +
+                        '条）</h4>';
+                    shortEntries.forEach(e => {
+                        const timeStr = new Date(e.timestamp).toLocaleDateString('zh-CN');
+                        html +=
+                            `<div class="mem-item">${escapeHTML(e.content.substring(0,120))}<div class="mem-meta">${timeStr} · 过期: ${new Date(e.expiresAt).toLocaleDateString('zh-CN')}</div></div>`;
+                    });
+                    memShort.innerHTML = html;
+                }
+
+                // 长期记忆
+                const bi = memorySystem.longTerm.basicInfo;
+                const prefs = memorySystem.longTerm.preferences || [];
+                const learning = memorySystem.longTerm.aiLearning || [];
+                const expenses = memorySystem.longTerm.expenses || [];
+                let longHTML = '<h4><span class="dot dot-long"></span>长期记忆</h4>';
+                let hasLong = false;
+
+                const biStr = [];
+                if (bi.age) biStr.push('年龄:' + bi.age);
+                if (bi.job) biStr.push('工作:' + bi.job);
+                if (bi.pets && bi.pets.length > 0) biStr.push('宠物:' + bi.pets.map(p => p.name + '(' + p.type + ')')
+                    .join(','));
+                if (bi.tools && bi.tools.length > 0) biStr.push('工具:' + bi.tools.join(','));
+                if (biStr.length > 0) {
+                    longHTML += '<div class="mem-item"><strong>基本信息</strong>: ' + escapeHTML(biStr.join('；')) +
+                        '</div>';
+                    hasLong = true;
+                }
+                if (prefs.length > 0) {
+                    longHTML += '<div class="mem-item"><strong>喜好</strong>: ' + escapeHTML(prefs.slice(-8).map(p =>
+                        '[' + p.category + ']' + p.detail).join('；')) + '</div>';
+                    hasLong = true;
+                }
+                if (learning.length > 0) {
+                    longHTML += '<div class="mem-item"><strong>AI学习</strong>: ' + escapeHTML(learning.slice(-6).map(l =>
+                        '[' + l.topic + ']' + l.content).join('；')) + '</div>';
+                    hasLong = true;
+                }
+                if (expenses.length > 0) {
+                    const recentExp = expenses.slice(-5).reverse();
+                    longHTML += '<div class="mem-item"><strong>近期开销</strong>: ' + escapeHTML(recentExp.map(e =>
+                        e.dateStr + ' ' + (e.amount ? '¥' + e.amount : '') + ' ' + e.description).join('；')) +
+                        '</div>';
+                    hasLong = true;
+                }
+                if (!hasLong) longHTML += '<div class="empty-hint">暂无长期记忆</div>';
+                memLong.innerHTML = longHTML;
+
+                // 波动记忆
+                const plans = memorySystem.volatile.plans || [];
+                const tempEvents = memorySystem.volatile.temporaryEvents || [];
+                let volHTML = '<h4><span class="dot dot-volatile"></span>波动记忆</h4>';
+                let hasVol = false;
+                if (plans.length > 0) {
+                    volHTML += '<div class="mem-item"><strong>计划</strong>: ' + escapeHTML(plans.map(p => '[' + p.type +
+                        ']' + p.content).join('；')) + '</div>';
+                    hasVol = true;
+                }
+                if (tempEvents.length > 0) {
+                    const active = tempEvents.filter(e => !e.estimatedExpiry || Date.now() < e.estimatedExpiry);
+                    if (active.length > 0) {
+                        volHTML += '<div class="mem-item"><strong>临时事件</strong>: ' + escapeHTML(active.slice(-6).map(e =>
+                            e.content + (e.estimatedExpiry ? '(至' + new Date(e.estimatedExpiry)
+                                .toLocaleDateString('zh-CN') + ')' : '')).join('；')) + '</div>';
+                        hasVol = true;
+                    }
+                }
+                if (!hasVol) volHTML += '<div class="empty-hint">暂无波动记忆</div>';
+                memVolatile.innerHTML = volHTML;
+            }
+
+            function escapeHTML(str) {
+                if (!str) return '';
+                return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }
+
+            // ==================== 设置弹窗 ====================
+            function openSettings() {
+                populateSettingsForm();
+                settingsModal.style.display = 'flex';
+            }
+
+            function closeSettingsModal() {
+                settingsModal.style.display = 'none';
+            }
+
+            settingsBtn.addEventListener('click', openSettings);
+            closeSettings.addEventListener('click', closeSettingsModal);
+            cancelSettings.addEventListener('click', closeSettingsModal);
+            settingsModal.addEventListener('click', function(e) {
+                if (e.target === settingsModal) closeSettingsModal();
+            });
+
+            saveSettings.addEventListener('click', function() {
+                const newSettings = {
+                    apiKey: apiKeyInput.value.trim(),
+                    apiBase: apiBaseInput.value.trim() || 'https://api.deepseek.com/v1',
+                    model: modelSelect.value,
+                    proxy: proxyInput.value.trim(),
+                    autoSave: autoSaveToggle.checked,
+                    autoSaveInterval: parseInt(autoSaveInterval.value),
+                };
+                persistSettings(newSettings);
+                appSettings = newSettings;
+                closeSettingsModal();
+                showToast('✅ 设置已保存');
+                // 重置对话历史（因为API密钥可能变了）
+                conversationHistory = [];
+                updateMemoryPanel();
+                // 更新自动保存定时器
+                updateAutoSaveTimer();
+            });
+
+            // ==================== 自动保存记忆 ====================
+            function exportMemoryToFile() {
+                const data = memorySystem.exportData();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'ai-memory-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+                a.click();
+                URL.revokeObjectURL(url);
+            }
+
+            function updateAutoSaveTimer() {
+                // 清除旧的定时器
+                if (autoSaveTimer) {
+                    clearInterval(autoSaveTimer);
+                    autoSaveTimer = null;
+                }
+
+                // 如果启用了自动保存，设置新的定时器
+                if (appSettings.autoSave && appSettings.autoSaveInterval > 0) {
+                    const intervalMs = appSettings.autoSaveInterval * 60 * 1000;
+                    autoSaveTimer = setInterval(() => {
+                        exportMemoryToFile();
+                        showToast('🔄 记忆已自动保存');
+                    }, intervalMs);
+                    showToast(`⏰ 自动保存已启用（每${appSettings.autoSaveInterval}分钟）`);
+                } else {
+                    showToast('⏹️ 自动保存已关闭');
+                }
+            }
+
+            // 初始化时检查是否需要开启自动保存
+            updateAutoSaveTimer();
+
+            // ==================== 侧边栏 ====================
+            function toggleSidebar() {
+                sidebar.classList.toggle('collapsed');
+            }
+            menuBtn.addEventListener('click', toggleSidebar);
+            sidebarClose.addEventListener('click', function() {
+                sidebar.classList.add('collapsed');
+            });
+
+            // ==================== 记忆面板按钮 ====================
+            btnCleanExpired.addEventListener('click', function() {
+                memorySystem._cleanExpired();
+                memorySystem._saveAll();
+                updateMemoryPanel();
+                showToast('已清理过期记忆');
+            });
+
+            btnExportMem.addEventListener('click', function() {
+                const data = memorySystem.exportData();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'ai-memory-backup-' + new Date().toISOString().split('T')[0] + '.json';
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast('记忆已导出');
+            });
+
+            btnClearAllMem.addEventListener('click', function() {
+                if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
+                    memorySystem.clearAll();
+                    conversationHistory = [];
+                    updateMemoryPanel();
+                    showToast('全部记忆已清空');
+                }
+            });
+
+            // ==================== 输入处理 ====================
+            userInput.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+            });
+
+            userInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            sendBtn.addEventListener('click', sendMessage);
+
+            // ==================== 初始化 ====================
+            function init() {
+                populateSettingsForm();
+                updateMemoryPanel();
+                userInput.focus();
+
+                // 加载缓存的对话历史
+                try {
+                    const cached = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
+                    if (cached) {
+                        const parsed = JSON.parse(cached);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            conversationHistory = parsed.slice(-MAX_HISTORY_MESSAGES);
+                            // 渲染缓存的对话
+                            parsed.forEach(msg => {
+                                if (msg.role === 'user' || msg.role === 'assistant') {
+                                    const role = msg.role === 'assistant' ? 'ai' : 'user';
+                                    renderMessage(role, msg.content, msg.timestamp);
+                                }
+                            });
+                        }
+                    }
+                } catch (e) { /* ignore */ }
+
+                // 定期保存对话历史
+                setInterval(() => {
+                    try {
+                        const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES).map(m => ({
+                            ...m,
+                            timestamp: m.timestamp || Date.now(),
+                        }));
+                        localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
+                    } catch (e) { /* ignore */ }
+                }, 5000);
+
+                // 定期清理过期记忆
+                setInterval(() => {
+                    memorySystem._cleanExpired();
+                    memorySystem._saveAll();
+                    updateMemoryPanel();
+                }, 60000);
+
+                console.log('🧠 AI记忆聊天系统已就绪');
+                console.log('  - 短期记忆:', memorySystem.shortTerm.entries.length, '条');
+                console.log('  - 长期记忆:', memorySystem.longTerm.preferences.length + memorySystem.longTerm.aiLearning
+                    .length, '条');
+                console.log('  - 波动记忆:', memorySystem.volatile.plans.length + memorySystem.volatile.temporaryEvents
+                    .length, '条');
+                console.log('  请设置DeepSeek API Key后开始对话。');
+            }
+
+            // 页面卸载前保存
+            window.addEventListener('beforeunload', () => {
+                try {
+                    const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES).map(m => ({
+                        ...m,
+                        timestamp: m.timestamp || Date.now(),
+                    }));
+                    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
+                } catch (e) { /* ignore */ }
+            });
+
+            // ==================== 移动端手势 ====================
+            let touchStartX = 0;
+            document.addEventListener('touchstart', function(e) {
+                touchStartX = e.touches[0].clientX;
+            }, { passive: true });
+            document.addEventListener('touchend', function(e) {
+                const diff = e.changedTouches[0].clientX - touchStartX;
+                if (diff > 60 && touchStartX < 30 && window.innerWidth <= 768) {
+                    // 从左边缘右滑 -> 打开侧边栏
+                    sidebar.classList.remove('collapsed');
+                }
+                if (diff < -40 && !sidebar.classList.contains('collapsed') && window.innerWidth <= 768) {
+                    // 左滑 -> 关闭侧边栏
+                    sidebar.classList.add('collapsed');
+                }
+            });
+
+            // 启动
+            init();
+        })();
+    </script>
+</body>
+</html>
