@@ -16,7 +16,7 @@ function ensureDir(dir) {
 function getMemoryFiles(dir) {
     ensureDir(dir);
     return fs.readdirSync(dir)
-        .filter(file => file.startsWith('ai-memory-backup-') && file.endsWith('.json'))
+        .filter(file => (file.startsWith('ai-backup-') || file.startsWith('ai-memory-backup-')) && file.endsWith('.json'))
         .sort((a, b) => fs.statSync(path.join(dir, b)).mtime.getTime() - fs.statSync(path.join(dir, a)).mtime.getTime());
 }
 
@@ -37,6 +37,7 @@ function mergeMemoryFiles(files) {
         shortTerm: { entries: [] },
         longTerm: { expenses: [], preferences: [], basicInfo: { age: null, job: null, pets: [], tools: [] }, aiLearning: [] },
         volatile: { plans: [], temporaryEvents: [] },
+        chatHistory: [],
         mergedFrom: files.length,
         mergedAt: new Date().toISOString(),
     };
@@ -44,10 +45,22 @@ function mergeMemoryFiles(files) {
     const seenShortTerm = new Set();
     const seenLongTerm = new Set();
     const seenVolatile = new Set();
+    const seenChat = new Set();
 
     files.forEach(file => {
         const data = readMemoryFile(path.join(MEMORY_DIR, file));
         if (!data) return;
+
+        // 合并聊天历史
+        (data.chatHistory || []).forEach(msg => {
+            if (msg.role && msg.content) {
+                const key = (msg.timestamp || '') + '-' + msg.role + '-' + msg.content;
+                if (!seenChat.has(key)) {
+                    seenChat.add(key);
+                    merged.chatHistory.push(msg);
+                }
+            }
+        });
 
         // 合并短期记忆
         (data.shortTerm?.entries || []).forEach(entry => {
@@ -103,6 +116,7 @@ function mergeMemoryFiles(files) {
     });
 
     // 按时间排序
+    merged.chatHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.shortTerm.entries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.expenses.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.preferences.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
@@ -129,12 +143,18 @@ function cleanupOldBackups(files, maxKeep = MAX_BACKUPS) {
 // 显示统计信息
 function showStats(data) {
     console.log('\n📊 记忆统计:');
+    console.log(`  ├── 对话历史: ${data.chatHistory ? data.chatHistory.length : 0} 条`);
     console.log(`  ├── 短期记忆: ${data.shortTerm.entries.length} 条`);
     console.log(`  ├── 长期记忆:`);
     console.log(`  │   ├── 支出记录: ${data.longTerm.expenses.length} 条`);
     console.log(`  │   ├── 偏好设置: ${data.longTerm.preferences.length} 条`);
     console.log(`  │   ├── 学习记录: ${data.longTerm.aiLearning.length} 条`);
-    console.log(`  │   └── 基本信息: ${Object.values(data.longTerm.basicInfo).filter(v => v !== null).length} 项`);
+    console.log(`  │   └── 基本信息: ${[
+        data.longTerm.basicInfo.age,
+        data.longTerm.basicInfo.job,
+        ...(data.longTerm.basicInfo.pets || []),
+        ...(data.longTerm.basicInfo.tools || []),
+    ].filter(v => v != null && v !== '').length} 项`);
     console.log(`  └── 临时记忆:`);
     console.log(`      ├── 计划: ${data.volatile.plans.length} 条`);
     console.log(`      └── 临时事件: ${data.volatile.temporaryEvents.length} 条`);
@@ -156,7 +176,14 @@ function main() {
             console.log(`📥 正在合并 ${files.length} 个记忆文件...`);
             const merged = mergeMemoryFiles(files);
             
-            const outputFile = path.join(MEMORY_DIR, `merged-memory-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+            const now = new Date();
+            const yyyy = now.getFullYear();
+            const MM = String(now.getMonth() + 1).padStart(2, '0');
+            const dd = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            const outputFile = path.join(MEMORY_DIR, `ai-backup-${yyyy}${MM}${dd}-${hh}${mm}${ss}.json`);
             fs.writeFileSync(outputFile, JSON.stringify(merged, null, 2));
             console.log(`✅ 合并完成！已保存到: ${outputFile}`);
             showStats(merged);
@@ -224,7 +251,7 @@ function main() {
 
 说明:
   - 记忆文件应放在 ${MEMORY_DIR} 目录下
-  - 文件命名格式: ai-memory-backup-*.json
+  - 支持的文件格式: ai-backup-*.json, ai-memory-backup-*.json
   - 合并时会自动去重并按时间排序
             `);
             break;

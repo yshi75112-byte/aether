@@ -911,6 +911,7 @@
             <div class="sidebar-footer">
                 <button id="btnCleanExpired">清理过期记忆</button>
                 <button id="btnExportMem">导出记忆</button>
+                <button id="btnImportMem">导入记忆</button>
                 <button class="danger" id="btnClearAllMem">清空全部记忆</button>
             </div>
         </aside>
@@ -1007,6 +1008,9 @@
     <!-- Toast容器 -->
     <div id="toastContainer"></div>
 
+    <!-- 隐藏的文件输入（用于导入） -->
+    <input type="file" id="importFileInput" accept=".json" style="display:none;">
+
     <script>
         (function() {
             // ==================== DOM引用 ====================
@@ -1038,7 +1042,9 @@
             const toastContainer = $('#toastContainer');
             const btnCleanExpired = $('#btnCleanExpired');
             const btnExportMem = $('#btnExportMem');
+            const btnImportMem = $('#btnImportMem');
             const btnClearAllMem = $('#btnClearAllMem');
+            const importFileInput = $('#importFileInput');
 
             // ==================== 状态 ====================
             let isProcessing = false;
@@ -1063,17 +1069,40 @@
 
                 loadAll() {
                     this.shortTerm = this._loadJSON(STORAGE_KEYS.SHORT_TERM, { entries: [] });
+                    if (!Array.isArray(this.shortTerm.entries)) this.shortTerm.entries = [];
                     this.longTerm = this._loadJSON(STORAGE_KEYS.LONG_TERM, {
                         expenses: [],
                         preferences: [],
                         basicInfo: { age: null, job: null, pets: [], tools: [] },
                         aiLearning: [],
                     });
+                    if (!Array.isArray(this.longTerm.expenses)) this.longTerm.expenses = [];
+                    if (!Array.isArray(this.longTerm.preferences)) this.longTerm.preferences = [];
+                    if (!Array.isArray(this.longTerm.aiLearning)) this.longTerm.aiLearning = [];
+                    if (!this.longTerm.basicInfo || typeof this.longTerm.basicInfo !== 'object') {
+                        this.longTerm.basicInfo = { age: null, job: null, pets: [], tools: [] };
+                    }
+                    if (!Array.isArray(this.longTerm.basicInfo.pets)) this.longTerm.basicInfo.pets = [];
+                    if (!Array.isArray(this.longTerm.basicInfo.tools)) this.longTerm.basicInfo.tools = [];
                     this.volatile = this._loadJSON(STORAGE_KEYS.VOLATILE, {
                         plans: [],
                         temporaryEvents: [],
                     });
+                    if (!Array.isArray(this.volatile.plans)) this.volatile.plans = [];
+                    if (!Array.isArray(this.volatile.temporaryEvents)) this.volatile.temporaryEvents = [];
                     this._cleanExpired();
+                    console.log('🧠 记忆系统初始化完成:', {
+                        shortTerm: this.shortTerm.entries.length,
+                        longTerm: {
+                            expenses: this.longTerm.expenses.length,
+                            preferences: this.longTerm.preferences.length,
+                            aiLearning: this.longTerm.aiLearning.length
+                        },
+                        volatile: {
+                            plans: this.volatile.plans.length,
+                            temporaryEvents: this.volatile.temporaryEvents.length
+                        }
+                    });
                 }
 
                 _loadJSON(key, defaultVal) {
@@ -1085,10 +1114,14 @@
                 }
 
                 _saveAll() {
+                    console.log('💾 [保存步骤] 开始保存数据...');
+                    console.log('💾 待保存的 volatile:', JSON.parse(JSON.stringify(this.volatile)));
                     try {
                         localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                         localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                         localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                        console.log('💾 保存成功！检查 localStorage 中的值:');
+                        console.log('💾 volatile from localStorage:', JSON.parse(localStorage.getItem(STORAGE_KEYS.VOLATILE)));
                     } catch (e) {
                         console.warn('记忆存储空间不足', e);
                         this._cleanExpired();
@@ -1107,16 +1140,16 @@
                     const now = Date.now();
                     const sevenDays = 7 * 24 * 60 * 60 * 1000;
 
-                    // 短期记忆：7天过期
+                    // 短期记忆：优先按 expiresAt，否则按 timestamp + 7天
                     this.shortTerm.entries = (this.shortTerm.entries || []).filter(e => {
-                        return (now - (e.timestamp || 0)) < sevenDays;
+                        const expiry = e.expiresAt || ((e.timestamp || 0) + sevenDays);
+                        return now < expiry;
                     });
 
                     // 波动记忆 - 临时事件：按估计过期时间清理
-                    this.volatile.temporaryEvents = (this.volatile.temporaryEvents || []).filter(e => {
-                        if (e.estimatedExpiry) return now < e.estimatedExpiry;
-                        return true; // 无过期时间的保留
-                    });
+                    this.volatile.temporaryEvents = (this.volatile.temporaryEvents || []).filter(e =>
+                        this._isTempEventActive(e, now)
+                    );
 
                     // 波动记忆 - 计划：不过期，等待用户主动删除
                     // （计划类记忆不自动过期，由用户指示删除）
@@ -1246,9 +1279,10 @@
 
                 /** 波动记忆 - 添加计划 */
                 addPlan(type, content) {
+                    if (!content || typeof content !== 'string' || !content.trim()) return;
                     const entry = {
                         type: type || '其他',
-                        content,
+                        content: content.trim(),
                         createdAt: Date.now(),
                         deleteCondition: 'user_indicated',
                     };
@@ -1266,20 +1300,32 @@
                         this.volatile.plans = this.volatile.plans.slice(-20);
                     }
                     this._saveAll();
+                    console.log('📝 计划已添加:', type, content, '当前计划数:', this.volatile.plans.length);
                 }
 
                 /** 波动记忆 - 添加临时事件 */
                 addTemporaryEvent(content, estimatedExpiry) {
+                    if (!content || typeof content !== 'string' || !content.trim()) return;
+                    console.log('📝 [步骤1：开始添加临时事件:', { content, estimatedExpiry });
                     const entry = {
-                        content,
+                        content: content.trim(),
                         createdAt: Date.now(),
-                        estimatedExpiry: estimatedExpiry || null,
+                        estimatedExpiry: this._normalizeExpiry(estimatedExpiry),
                     };
-                    this.volatile.temporaryEvents.push(entry);
+                    const dup = this.volatile.temporaryEvents.find(e =>
+                        this._similarity(e.content, entry.content) > 0.7
+                    );
+                    if (dup) {
+                        dup.estimatedExpiry = entry.estimatedExpiry;
+                        dup.createdAt = Date.now();
+                    } else {
+                        this.volatile.temporaryEvents.push(entry);
+                    }
                     if (this.volatile.temporaryEvents.length > 50) {
                         this.volatile.temporaryEvents = this.volatile.temporaryEvents.slice(-35);
                     }
                     this._saveAll();
+                    console.log('📝 [步骤4：临时事件保存成功！当前数据:', this.volatile.temporaryEvents);
                 }
 
                 /** 删除波动记忆中的计划 */
@@ -1324,6 +1370,10 @@
                     this.volatile.plans = this.volatile.plans.filter(p =>
                         !p.content.includes(negatedTopic)
                     );
+                    // 在波动记忆临时事件中查找
+                    this.volatile.temporaryEvents = this.volatile.temporaryEvents.filter(e =>
+                        !e.content.includes(negatedTopic)
+                    );
                     this._saveAll();
                 }
 
@@ -1336,6 +1386,22 @@
                     // 限制长度
                     if (cleaned.length > 300) cleaned = cleaned.substring(0, 280) + '...';
                     return cleaned;
+                }
+
+                /** 将 AI 可能返回的多种时间格式统一为毫秒时间戳 */
+                _normalizeExpiry(value) {
+                    if (value == null || value === '') return null;
+                    if (typeof value === 'number' && !isNaN(value)) {
+                        // 小于 1e12 视为秒级时间戳，转换为毫秒
+                        return value < 1e12 ? value * 1000 : value;
+                    }
+                    const parsed = Date.parse(String(value));
+                    return isNaN(parsed) ? null : parsed;
+                }
+
+                _isTempEventActive(event, now = Date.now()) {
+                    const expiry = this._normalizeExpiry(event && event.estimatedExpiry);
+                    return !expiry || now < expiry;
                 }
 
                 /** 简单相似度检测 */
@@ -1411,7 +1477,7 @@
 
                     // 波动记忆 - 临时事件
                     const activeTemp = (this.volatile.temporaryEvents || [])
-                        .filter(e => !e.estimatedExpiry || Date.now() < e.estimatedExpiry)
+                        .filter(e => this._isTempEventActive(e))
                         .slice(-8)
                         .map(e => e.content)
                         .join('；');
@@ -1430,11 +1496,12 @@
                 }
 
                 /** 导出记忆 */
-                exportData() {
+                exportData(chatHistory = []) {
                     return {
                         shortTerm: this.shortTerm,
                         longTerm: this.longTerm,
                         volatile: this.volatile,
+                        chatHistory: chatHistory,
                         exportedAt: new Date().toISOString(),
                     };
                 }
@@ -1499,7 +1566,8 @@
             }
 
             // ==================== 渲染消息 ====================
-            function renderMessage(role, content, timestamp = null) {
+            function renderMessage(role, content, timestamp = null, options = {}) {
+                const { applyMemoryUpdate = false } = options;
                 const msgDiv = document.createElement('div');
                 msgDiv.className = `message ${role}`;
                 const avatarText = role === 'user' ? 'U' : 'AI';
@@ -1507,17 +1575,13 @@
                     minute: '2-digit' }) : new Date().toLocaleTimeString('zh-CN', { hour: '2-digit',
                     minute: '2-digit' });
 
-                // 处理内容中的记忆更新标记
-                let displayContent = content;
-                const memUpdateMatch = content.match(/<!--MEMORY_UPDATE:(.*?)-->/s);
-                if (memUpdateMatch) {
-                    displayContent = content.replace(/<!--MEMORY_UPDATE:.*?-->/gs, '').trim();
-                    // 处理记忆更新
-                    try {
-                        const memData = JSON.parse(memUpdateMatch[1]);
+                // 始终剥离记忆标记，避免在聊天气泡中显示
+                let displayContent = stripMemoryUpdateMarkers(content);
+                if (applyMemoryUpdate) {
+                    const memData = extractMemoryUpdatePayload(content);
+                    if (memData) {
+                        console.log('📌 检测到记忆更新标记');
                         processMemoryUpdate(memData);
-                    } catch (e) {
-                        console.warn('记忆更新解析失败', e);
                     }
                 }
 
@@ -1565,6 +1629,45 @@
                 });
             }
 
+            // ==================== 解析记忆更新标记 ====================
+            function extractMemoryUpdatePayload(content) {
+                if (!content) return null;
+                const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
+                if (!match) return null;
+                try {
+                    return JSON.parse(match[1].trim());
+                } catch (e) {
+                    console.warn('⚠ 记忆更新 JSON 解析失败:', e, match[1].substring(0, 120));
+                    return null;
+                }
+            }
+
+            function stripMemoryUpdateMarkers(content) {
+                if (!content) return '';
+                return content.replace(/<!--\s*MEMORY_UPDATE\s*:[\s\S]*?\s*-->/gi, '').trim();
+            }
+
+            function applyPlanUpdate(plan) {
+                if (!plan || typeof plan !== 'object') return;
+                const content = plan.content || plan.detail || plan.description;
+                if (!content) {
+                    console.warn('⚠ 计划缺少 content:', plan);
+                    return;
+                }
+                const type = plan.type || plan.category || '其他';
+                memorySystem.addPlan(type, content);
+            }
+
+            function applyTemporaryEventUpdate(te) {
+                if (!te || typeof te !== 'object') return;
+                const content = te.content || te.detail || te.description;
+                if (!content) {
+                    console.warn('⚠ 临时事件缺少 content:', te);
+                    return;
+                }
+                memorySystem.addTemporaryEvent(content, te.estimatedExpiry ?? te.expiry ?? null);
+            }
+
             // ==================== 处理记忆更新指令 ====================
             function processMemoryUpdate(memData) {
                 if (!memData) return;
@@ -1595,14 +1698,36 @@
                     const learn = memData.aiLearning;
                     memorySystem.addAiLearning(learn.topic, learn.content);
                 }
-                if (memData.plan) {
-                    const plan = memData.plan;
-                    memorySystem.addPlan(plan.type, plan.content);
+                const planItems = [];
+                if (memData.plan) planItems.push(memData.plan);
+                if (memData.plans) {
+                    const extra = Array.isArray(memData.plans) ? memData.plans : [memData.plans];
+                    planItems.push(...extra);
                 }
-                if (memData.temporaryEvent) {
-                    const te = memData.temporaryEvent;
-                    memorySystem.addTemporaryEvent(te.content, te.estimatedExpiry || null);
+                if (memData.volatile && memData.volatile.plans) {
+                    const extra = Array.isArray(memData.volatile.plans) ? memData.volatile.plans : [memData.volatile.plans];
+                    planItems.push(...extra);
                 }
+                planItems.forEach(plan => {
+                    console.log('🔄 收到计划更新:', plan);
+                    applyPlanUpdate(plan);
+                });
+
+                const tempEventItems = [];
+                if (memData.temporaryEvent) tempEventItems.push(memData.temporaryEvent);
+                if (memData.temporaryEvents) {
+                    const extra = Array.isArray(memData.temporaryEvents) ? memData.temporaryEvents : [memData.temporaryEvents];
+                    tempEventItems.push(...extra);
+                }
+                if (memData.volatile && memData.volatile.temporaryEvents) {
+                    const extra = Array.isArray(memData.volatile.temporaryEvents) ?
+                        memData.volatile.temporaryEvents : [memData.volatile.temporaryEvents];
+                    tempEventItems.push(...extra);
+                }
+                tempEventItems.forEach(te => {
+                    console.log('🔄 收到临时事件更新:', te);
+                    applyTemporaryEventUpdate(te);
+                });
                 if (memData.removePlan) {
                     memorySystem.removePlan(memData.removePlan);
                 }
@@ -1612,50 +1737,72 @@
                 if (memData.userNegation) {
                     memorySystem.handleUserNegation(memData.userNegation);
                 }
-                // 更新侧边栏
-                updateMemoryPanel();
             }
 
             // ==================== 构建系统提示 ====================
             function buildSystemPrompt() {
                 const memorySummary = memorySystem.getMemorySummary();
-                return `你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。在用户明显犯错或自相矛盾时可以小小反击（增加活人感），但保持总体建设性。
-
-        ## 回复风格要求
-        - 简约，直接给答案，不铺垫
-        - 务实，提高用户行动能力
-        - 可偶尔毒舌反击但保持有用
-        - 不要过度热情，保持专业距离
-
-        ## 记忆系统
-        你有一个多层记忆系统。以下是已存储的记忆：
-        ${memorySummary}
-
-        ## 记忆更新规则
-        在每次回复末尾，如果需要更新记忆，请添加一个不可见的记忆更新标记。格式：
-        <!--MEMORY_UPDATE:{"shortTerm":[{"content":"提取的关键信息"}],"expense":{"amount":数字,"category":"类别","description":"描述"},"preference":{"category":"类别","detail":"具体内容"},"basicInfo":{"age":数字,"job":"职业"},"aiLearning":{"topic":"主题","content":"学习内容"},"plan":{"type":"学习计划/健康计划/其他","content":"计划内容"},"temporaryEvent":{"content":"事件内容","estimatedExpiry":过期时间戳},"removePlan":"要删除的计划关键词","userNegation":"用户否定的主题"}-->
-
-        ## 记忆类型说明
-        1. **短期记忆**：日常对话中的关键信息，保留7天。需精简提取后存储。
-        2. **长期记忆**：
-           - 开销（必须带时间戳）
-           - 用户喜好
-           - 用户基本信息（年龄、工作、宠物名称类型、拥有的工具等）
-           - AI学习板块：当用户主动要求你学习某事时，将核心内容记录到此
-        3. **波动记忆**：
-           - 计划类：学习计划、健康计划等，用户可指示删除
-           - 临时事件：现实中不会长时间存在的事件，需估计过期时间
-        4. **记忆自清洁**：重复信息整合，冲突信息用新覆盖旧（不确定时询问用户）
-
-        ## 信息提取规则
-        - 不允许发散思维，没有明确描述不允许贴标签
-        - 用户明确否定时，主动修改或删除相关记忆
-        - 当用户提到计划类话题时，主动询问是否需要拟定策划案
-
-        ## 当前时间
-        ${new Date().toISOString()}
-
-        请根据以上设定回复用户。保持简约高效。`;
+                
+                const systemPromptParts = [
+                    "你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。在用户明显犯错或自相矛盾时可以小小反击（增加活人感），但保持总体建设性。",
+                    "",
+                    "## 回复风格要求",
+                    "- 简约，直接给答案，不铺垫",
+                    "- 务实，提高用户行动能力",
+                    "- 可偶尔毒舌反击但保持有用",
+                    "- 不要过度热情，保持专业距离",
+                    "",
+                    "## 记忆系统",
+                    "你有一个多层记忆系统。以下是已存储的记忆：",
+                    memorySummary,
+                    "",
+                    "## 记忆更新规则【极其重要！必须遵守！】",
+                    "✅ 每次回复末尾必须添加记忆更新标记！即使没有新记忆也要加！",
+                    "✅ 记忆更新标记是隐藏的，用户看不到，但代码会解析！",
+                    "✅ 标记格式：<!--MEMORY_UPDATE:JSON数据-->，JSON必须完整有效！",
+                    "",
+                    "示例：",
+                    "用户说：我计划明天去跑步",
+                    "你的回复：好的，记得明天去跑步。<!--MEMORY_UPDATE:{\"plan\":{\"type\":\"健康计划\",\"content\":\"明天去跑步\"}}-->",
+                    "",
+                    "用户说：我28岁，做程序员",
+                    "你的回复：了解了。<!--MEMORY_UPDATE:{\"basicInfo\":{\"age\":28,\"job\":\"程序员\"},\"shortTerm\":[{\"content\":\"用户28岁程序员\"}]}-->",
+                    "",
+                    "用户说：我喜欢喝咖啡",
+                    "你的回复：好的。<!--MEMORY_UPDATE:{\"preference\":{\"category\":\"饮食\",\"detail\":\"喜欢喝咖啡\"}}-->",
+                    "",
+                    "用户说：你好",
+                    "你的回复：你好！有什么可以帮你的？<!--MEMORY_UPDATE:{}-->",
+                    "",
+                    "## 记忆类型说明",
+                    "1. **短期记忆**：日常对话中的关键信息，保留7天。需精简提取后存储。",
+                    "2. **长期记忆**：",
+                    "   - 开销（必须带时间戳）",
+                    "   - 用户喜好",
+                    "   - 用户基本信息（年龄、工作、宠物名称类型、拥有的工具等）",
+                    "   - AI学习板块：当用户主动要求你学习某事时，将核心内容记录到此",
+                    "3. **波动记忆**：",
+                    "   - 计划类：学习计划、健康计划等，用户可指示删除",
+                    "   - 临时事件：现实中不会长时间存在的事件，需估计过期时间",
+                    "4. **记忆自清洁**：重复信息整合，冲突信息用新覆盖旧（不确定时询问用户）",
+                    "",
+                    "## 信息提取规则",
+                    "- 不允许发散思维，没有明确描述不允许贴标签",
+                    "- 用户明确否定时，主动修改或删除相关记忆",
+                    "- 当用户提到计划类话题时，主动询问是否需要拟定策划案",
+                    "- ⚠️ 必须在每次回复末尾添加记忆更新标记！",
+                    "",
+                    "## 时间戳说明",
+                    "- 用户和AI的每条消息都带有 [月-日 时:分] 格式的时间前缀，例如：[05-28 14:30]",
+                    "- 请利用这些时间信息理解对话的时序和上下文",
+                    "- 当前时间是：" + new Date().toISOString(),
+                    "",
+                    "请根据以上设定回复用户。保持简约高效。"
+                ];
+                
+                const prompt = systemPromptParts.join("\n");
+                console.log('📋 系统提示内容预览（前500字符）:', prompt.substring(0, 500));
+                return prompt;
             }
 
             // ==================== 调用DeepSeek API ====================
@@ -1722,8 +1869,9 @@
                 setThinkingState(true);
 
                 // 渲染用户消息
-                renderMessage('user', userText);
-                const userMsgForHistory = { role: 'user', content: userText };
+                const userTimestamp = Date.now();
+                renderMessage('user', userText, userTimestamp);
+                const userMsgForHistory = { role: 'user', content: userText, timestamp: userTimestamp };
                 conversationHistory.push(userMsgForHistory);
                 if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
                     conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
@@ -1739,9 +1887,26 @@
 
                 // 构建API消息
                 const systemPrompt = buildSystemPrompt();
+                
+                // 为对话历史添加简洁时间前缀，让AI知道消息时间但不冗长
+                const historyWithTime = conversationHistory.slice(-30).map(msg => {
+                    const timeStr = msg.timestamp 
+                        ? new Date(msg.timestamp).toLocaleString('zh-CN', { 
+                            month: '2-digit', 
+                            day: '2-digit', 
+                            hour: '2-digit', 
+                            minute: '2-digit' 
+                        })
+                        : '';
+                    return {
+                        role: msg.role,
+                        content: timeStr ? `[${timeStr}] ${msg.content}` : msg.content
+                    };
+                });
+                
                 const apiMessages = [
                     { role: 'system', content: systemPrompt },
-                    ...conversationHistory.slice(-30),
+                    ...historyWithTime,
                 ];
 
                 // 创建AI消息占位
@@ -1764,17 +1929,24 @@
                     if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
 
                     // 渲染AI回复（会自动处理记忆更新标记）
-                    renderMessage('ai', aiResponse);
-                    const aiMsgForHistory = { role: 'assistant', content: aiResponse.replace(
-                            /<!--MEMORY_UPDATE:.*?-->/gs, '').trim() };
+                    const aiTimestamp = Date.now();
+                    renderMessage('ai', aiResponse, aiTimestamp, { applyMemoryUpdate: true });
+                    const aiMsgForHistory = { 
+                        role: 'assistant', 
+                        content: stripMemoryUpdateMarkers(aiResponse),
+                        timestamp: aiTimestamp 
+                    };
                     conversationHistory.push(aiMsgForHistory);
                     if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
                         conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
                     }
 
-                    // 同时将AI回复的关键信息存入短期记忆
-                    const cleanResponse = aiResponse.replace(/<!--MEMORY_UPDATE:.*?-->/gs, '').trim();
-                    if (cleanResponse.length > 10) {
+                    // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
+                    const cleanResponse = stripMemoryUpdateMarkers(aiResponse);
+                    const memPayload = extractMemoryUpdatePayload(aiResponse);
+                    const hasShortTermUpdate = memPayload && memPayload.shortTerm &&
+                        (Array.isArray(memPayload.shortTerm) ? memPayload.shortTerm.length > 0 : !!memPayload.shortTerm);
+                    if (cleanResponse.length > 10 && !hasShortTermUpdate) {
                         memorySystem.addShortTerm('AI回复要点: ' + cleanResponse.substring(0, 200),
                         'ai_response');
                     }
@@ -1795,24 +1967,50 @@
                 }
             }
 
+            function clearChatHistory() {
+                conversationHistory = [];
+                messagesContainer.innerHTML = '';
+                try {
+                    localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
+                } catch (e) { /* ignore */ }
+            }
+
+            function persistChatHistory() {
+                try {
+                    const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
+                    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
+                } catch (e) { /* ignore */ }
+            }
+
             // ==================== 更新记忆面板 ====================
             function updateMemoryPanel() {
                 const memShort = $('#memShort');
                 const memLong = $('#memLong');
                 const memVolatile = $('#memVolatile');
+                if (!memShort || !memLong || !memVolatile) return;
 
-                // 短期记忆
-                const shortEntries = (memorySystem.shortTerm.entries || []).slice(-20).reverse();
+                const sevenDays = 7 * 24 * 60 * 60 * 1000;
+                const now = Date.now();
+                const allShortEntries = (memorySystem.shortTerm.entries || []).filter(e => {
+                    const expiry = e.expiresAt || ((e.timestamp || 0) + sevenDays);
+                    return now < expiry;
+                });
+                const shortEntries = allShortEntries.slice(-20).reverse();
                 if (shortEntries.length === 0) {
                     memShort.innerHTML =
                         '<h4><span class="dot dot-short"></span>短期记忆（7天）</h4><div class="empty-hint">暂无短期记忆</div>';
                 } else {
-                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortEntries.length +
-                        '条）</h4>';
+                    const countLabel = allShortEntries.length > shortEntries.length ?
+                        `${shortEntries.length}/${allShortEntries.length}` : String(allShortEntries.length);
+                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + countLabel + '条）</h4>';
                     shortEntries.forEach(e => {
-                        const timeStr = new Date(e.timestamp).toLocaleDateString('zh-CN');
+                        const text = String(e.content || '');
+                        const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleDateString('zh-CN') : '未知';
+                        const expiryStr = e.expiresAt ?
+                            new Date(e.expiresAt).toLocaleDateString('zh-CN') :
+                            new Date((e.timestamp || now) + sevenDays).toLocaleDateString('zh-CN');
                         html +=
-                            `<div class="mem-item">${escapeHTML(e.content.substring(0,120))}<div class="mem-meta">${timeStr} · 过期: ${new Date(e.expiresAt).toLocaleDateString('zh-CN')}</div></div>`;
+                            `<div class="mem-item">${escapeHTML(text.substring(0, 120))}<div class="mem-meta">${timeStr} · 过期: ${expiryStr}</div></div>`;
                     });
                     memShort.innerHTML = html;
                 }
@@ -1849,7 +2047,7 @@
                 if (expenses.length > 0) {
                     const recentExp = expenses.slice(-5).reverse();
                     longHTML += '<div class="mem-item"><strong>近期开销</strong>: ' + escapeHTML(recentExp.map(e =>
-                        e.dateStr + ' ' + (e.amount ? '¥' + e.amount : '') + ' ' + e.description).join('；')) +
+                        e.dateStr + ' ' + (e.amount != null && e.amount !== '' ? '¥' + e.amount : '') + ' ' + (e.description || '')).join('；')) +
                         '</div>';
                     hasLong = true;
                 }
@@ -1861,19 +2059,22 @@
                 const tempEvents = memorySystem.volatile.temporaryEvents || [];
                 let volHTML = '<h4><span class="dot dot-volatile"></span>波动记忆</h4>';
                 let hasVol = false;
-                if (plans.length > 0) {
-                    volHTML += '<div class="mem-item"><strong>计划</strong>: ' + escapeHTML(plans.map(p => '[' + p.type +
-                        ']' + p.content).join('；')) + '</div>';
+                const validPlans = plans.filter(p => p && p.content);
+                if (validPlans.length > 0) {
+                    validPlans.slice(-8).forEach(p => {
+                        volHTML += `<div class="mem-item"><strong>计划</strong> [${escapeHTML(p.type || '其他')}] ${escapeHTML(p.content)}</div>`;
+                    });
                     hasVol = true;
                 }
-                if (tempEvents.length > 0) {
-                    const active = tempEvents.filter(e => !e.estimatedExpiry || Date.now() < e.estimatedExpiry);
-                    if (active.length > 0) {
-                        volHTML += '<div class="mem-item"><strong>临时事件</strong>: ' + escapeHTML(active.slice(-6).map(e =>
-                            e.content + (e.estimatedExpiry ? '(至' + new Date(e.estimatedExpiry)
-                                .toLocaleDateString('zh-CN') + ')' : '')).join('；')) + '</div>';
-                        hasVol = true;
-                    }
+                const active = tempEvents.filter(e => e && e.content && memorySystem._isTempEventActive(e));
+                if (active.length > 0) {
+                    active.slice(-6).forEach(e => {
+                        const expiry = memorySystem._normalizeExpiry(e.estimatedExpiry);
+                        const expiryLabel = expiry ?
+                            ' · 至' + new Date(expiry).toLocaleDateString('zh-CN') : '';
+                        volHTML += `<div class="mem-item"><strong>临时事件</strong> ${escapeHTML(e.content)}<div class="mem-meta">${expiryLabel || '无过期时间'}</div></div>`;
+                    });
+                    hasVol = true;
                 }
                 if (!hasVol) volHTML += '<div class="empty-hint">暂无波动记忆</div>';
                 memVolatile.innerHTML = volHTML;
@@ -1915,22 +2116,38 @@
                 closeSettingsModal();
                 showToast('✅ 设置已保存');
                 // 重置对话历史（因为API密钥可能变了）
-                conversationHistory = [];
+                clearChatHistory();
                 updateMemoryPanel();
                 // 更新自动保存定时器
                 updateAutoSaveTimer();
             });
 
-            // ==================== 自动保存记忆 ====================
-            function exportMemoryToFile() {
-                const data = memorySystem.exportData();
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            // ==================== 辅助函数 ====================
+            function formatDateTime() {
+                const now = new Date();
+                const yyyy = now.getFullYear();
+                const MM = String(now.getMonth() + 1).padStart(2, '0');
+                const dd = String(now.getDate()).padStart(2, '0');
+                const hh = String(now.getHours()).padStart(2, '0');
+                const mm = String(now.getMinutes()).padStart(2, '0');
+                const ss = String(now.getSeconds()).padStart(2, '0');
+                return `${yyyy}${MM}${dd}-${hh}${mm}${ss}`;
+            }
+
+            function downloadFile(blob, filename) {
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'ai-memory-backup-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+                a.download = filename;
                 a.click();
                 URL.revokeObjectURL(url);
+            }
+
+            // ==================== 自动保存记忆 ====================
+            function exportMemoryToFile() {
+                const data = memorySystem.exportData(conversationHistory);
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
             }
 
             function updateAutoSaveTimer() {
@@ -1974,21 +2191,224 @@
             });
 
             btnExportMem.addEventListener('click', function() {
-                const data = memorySystem.exportData();
+                const data = memorySystem.exportData(conversationHistory);
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'ai-memory-backup-' + new Date().toISOString().split('T')[0] + '.json';
-                a.click();
-                URL.revokeObjectURL(url);
+                downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
                 showToast('记忆已导出');
+            });
+
+            btnImportMem.addEventListener('click', function() {
+                importFileInput.click();
+            });
+
+            importFileInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    try {
+                        const imported = JSON.parse(event.target.result);
+
+                        let chatImported = 0;
+                        let shortImported = 0;
+                        let longImported = 0;
+                        let volatileImported = 0;
+                        let hasChatChanges = false;
+
+                        if (imported.chatHistory && Array.isArray(imported.chatHistory)) {
+                            const existingTimestamps = new Set(conversationHistory.map(m => m.timestamp));
+                            let hasOverlappingTimestamps = false;
+                            
+                            imported.chatHistory.forEach(msg => {
+                                if (msg.role && msg.content) {
+                                    const timestamp = msg.timestamp || Date.now();
+                                    const cleanContent = msg.role === 'assistant' ?
+                                        stripMemoryUpdateMarkers(msg.content) : msg.content;
+                                    
+                                    if (existingTimestamps.has(timestamp)) {
+                                        hasOverlappingTimestamps = true;
+                                    }
+                                    
+                                    const existingIndex = conversationHistory.findIndex(m => m.timestamp === timestamp);
+                                    if (existingIndex >= 0) {
+                                        conversationHistory[existingIndex] = {
+                                            role: msg.role,
+                                            content: cleanContent,
+                                            timestamp: timestamp
+                                        };
+                                    } else {
+                                        conversationHistory.push({
+                                            role: msg.role,
+                                            content: cleanContent,
+                                            timestamp: timestamp
+                                        });
+                                        chatImported++;
+                                    }
+                                }
+                            });
+                            
+                            if (chatImported > 0 || hasOverlappingTimestamps) {
+                                conversationHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                                conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
+                                localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(conversationHistory));
+                                hasChatChanges = true;
+                            }
+                        }
+
+                        if (imported.shortTerm && imported.shortTerm.entries) {
+                            const existingShort = new Set(memorySystem.shortTerm.entries.map(e => e.content));
+                            imported.shortTerm.entries.forEach(entry => {
+                                if (!existingShort.has(entry.content)) {
+                                    memorySystem.shortTerm.entries.push(entry);
+                                    shortImported++;
+                                    existingShort.add(entry.content);
+                                }
+                            });
+                        }
+
+                        if (imported.longTerm) {
+                            if (imported.longTerm.expenses) {
+                                const existingExpenses = new Set(memorySystem.longTerm.expenses.map(e => 
+                                    e.dateStr + '-' + e.amount + '-' + e.description
+                                ));
+                                imported.longTerm.expenses.forEach(exp => {
+                                    const key = (exp.dateStr || '') + '-' + (exp.amount || '') + '-' + (exp.description || '');
+                                    if (!existingExpenses.has(key)) {
+                                        memorySystem.longTerm.expenses.push(exp);
+                                        longImported++;
+                                        existingExpenses.add(key);
+                                    }
+                                });
+                            }
+                            if (imported.longTerm.preferences) {
+                                imported.longTerm.preferences.forEach(pref => {
+                                    const dup = memorySystem.longTerm.preferences.find(p =>
+                                        p.category === pref.category && p.detail === pref.detail
+                                    );
+                                    if (!dup) {
+                                        memorySystem.longTerm.preferences.push(pref);
+                                        longImported++;
+                                    }
+                                });
+                            }
+                            if (imported.longTerm.basicInfo) {
+                                Object.keys(imported.longTerm.basicInfo).forEach(key => {
+                                    if (imported.longTerm.basicInfo[key] !== null && 
+                                        imported.longTerm.basicInfo[key] !== undefined) {
+                                        if (Array.isArray(imported.longTerm.basicInfo[key])) {
+                                            if (!memorySystem.longTerm.basicInfo[key]) {
+                                                memorySystem.longTerm.basicInfo[key] = [];
+                                            }
+                                            imported.longTerm.basicInfo[key].forEach(item => {
+                                                if (key === 'pets' && item && item.name) {
+                                                    const exists = memorySystem.longTerm.basicInfo.pets.find(p =>
+                                                        p.name === item.name && p.type === (item.type || '未知')
+                                                    );
+                                                    if (!exists) {
+                                                        memorySystem.longTerm.basicInfo.pets.push({
+                                                            name: item.name,
+                                                            type: item.type || '未知'
+                                                        });
+                                                        longImported++;
+                                                    }
+                                                } else if (key === 'tools' && typeof item === 'string') {
+                                                    if (!memorySystem.longTerm.basicInfo.tools.includes(item)) {
+                                                        memorySystem.longTerm.basicInfo.tools.push(item);
+                                                        longImported++;
+                                                    }
+                                                } else if (!memorySystem.longTerm.basicInfo[key].includes(item)) {
+                                                    memorySystem.longTerm.basicInfo[key].push(item);
+                                                    longImported++;
+                                                }
+                                            });
+                                        } else if (!memorySystem.longTerm.basicInfo[key]) {
+                                            memorySystem.longTerm.basicInfo[key] = imported.longTerm.basicInfo[key];
+                                            longImported++;
+                                        }
+                                    }
+                                });
+                            }
+                            if (imported.longTerm.aiLearning) {
+                                imported.longTerm.aiLearning.forEach(learn => {
+                                    const dup = memorySystem.longTerm.aiLearning.find(l =>
+                                        l.topic === learn.topic
+                                    );
+                                    if (!dup) {
+                                        memorySystem.longTerm.aiLearning.push(learn);
+                                        longImported++;
+                                    }
+                                });
+                            }
+                        }
+
+                        if (imported.volatile) {
+                            if (imported.volatile.plans) {
+                                imported.volatile.plans.forEach(plan => {
+                                    const dup = memorySystem.volatile.plans.find(p =>
+                                        p.type === plan.type && p.content === plan.content
+                                    );
+                                    if (!dup) {
+                                        memorySystem.volatile.plans.push(plan);
+                                        volatileImported++;
+                                    }
+                                });
+                            }
+                            if (imported.volatile.temporaryEvents) {
+                                imported.volatile.temporaryEvents.forEach(evt => {
+                                    if (!evt || !evt.content) return;
+                                    const dup = memorySystem.volatile.temporaryEvents.find(e =>
+                                        e.content === evt.content
+                                    );
+                                    if (!dup) {
+                                        memorySystem.volatile.temporaryEvents.push({
+                                            content: evt.content,
+                                            createdAt: evt.createdAt || Date.now(),
+                                            estimatedExpiry: memorySystem._normalizeExpiry(evt.estimatedExpiry),
+                                        });
+                                        volatileImported++;
+                                    }
+                                });
+                            }
+                        }
+
+                        memorySystem._saveAll();
+                        updateMemoryPanel();
+
+                        if (hasChatChanges) {
+                            messagesContainer.innerHTML = '';
+                            conversationHistory.forEach(msg => {
+                                if (msg.role === 'user' || msg.role === 'assistant') {
+                                    const role = msg.role === 'assistant' ? 'ai' : 'user';
+                                    renderMessage(role, msg.content, msg.timestamp);
+                                }
+                            });
+                        }
+
+                        let msg = '导入完成：';
+                        if (chatImported > 0) msg += `对话${chatImported}条、`;
+                        if (shortImported > 0) msg += `短期${shortImported}条、`;
+                        if (longImported > 0) msg += `长期${longImported}条、`;
+                        if (volatileImported > 0) msg += `波动${volatileImported}条、`;
+                        if (chatImported === 0 && shortImported === 0 && longImported === 0 && volatileImported === 0) {
+                            msg = '未导入新数据（可能已存在或格式无效）';
+                        } else {
+                            msg = msg.replace(/、$/, '');
+                        }
+                        showToast(msg);
+                    } catch (err) {
+                        console.error('导入失败:', err);
+                        showToast('导入失败：文件格式错误');
+                    }
+                };
+                reader.readAsText(file);
+                importFileInput.value = '';
             });
 
             btnClearAllMem.addEventListener('click', function() {
                 if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
                     memorySystem.clearAll();
-                    conversationHistory = [];
+                    clearChatHistory();
                     updateMemoryPanel();
                     showToast('全部记忆已清空');
                 }
@@ -2034,15 +2454,7 @@
                 } catch (e) { /* ignore */ }
 
                 // 定期保存对话历史
-                setInterval(() => {
-                    try {
-                        const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES).map(m => ({
-                            ...m,
-                            timestamp: m.timestamp || Date.now(),
-                        }));
-                        localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
-                    } catch (e) { /* ignore */ }
-                }, 5000);
+                setInterval(persistChatHistory, 5000);
 
                 // 定期清理过期记忆
                 setInterval(() => {
@@ -2061,15 +2473,7 @@
             }
 
             // 页面卸载前保存
-            window.addEventListener('beforeunload', () => {
-                try {
-                    const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES).map(m => ({
-                        ...m,
-                        timestamp: m.timestamp || Date.now(),
-                    }));
-                    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
-                } catch (e) { /* ignore */ }
-            });
+            window.addEventListener('beforeunload', persistChatHistory);
 
             // ==================== 移动端手势 ====================
             let touchStartX = 0;
