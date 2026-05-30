@@ -113,15 +113,25 @@
             padding: 20px 20px 14px;
             border-bottom: 1px solid var(--border);
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: space-between;
+            gap: 10px;
             flex-shrink: 0;
+        }
+        .sidebar-header-text {
+            flex: 1;
+            min-width: 0;
         }
         .sidebar-header h3 {
             font-size: 0.95rem;
             font-weight: 600;
             color: var(--accent);
             letter-spacing: 0.02em;
+        }
+        .sidebar-stats {
+            margin-top: 4px;
+            font-size: 0.72rem;
+            color: var(--text-muted);
         }
         .sidebar-close {
             width: 32px;
@@ -888,7 +898,10 @@
         <!-- ==================== 侧边栏 - 记忆面板 ==================== -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h3>🧠 记忆系统</h3>
+                <div class="sidebar-header-text">
+                    <h3>🧠 记忆系统</h3>
+                    <div class="sidebar-stats" id="sidebarStats">对话记录 0 条</div>
+                </div>
                 <button class="sidebar-close" id="sidebarClose" title="关闭面板">×</button>
             </div>
             <div class="sidebar-content" id="sidebarContent">
@@ -1048,8 +1061,8 @@
 
             // ==================== 状态 ====================
             let isProcessing = false;
-            let conversationHistory = []; // 当前会话的消息历史（用于API）
-            const MAX_HISTORY_MESSAGES = 40; // 最多保留最近40条消息
+            let conversationHistory = []; // 当前会话的消息历史（用于API），无条数上限
+            const MAX_SHORT_TERM_ENTRIES = 50; // 短期记忆最多保留50条
             let autoSaveTimer = null; // 自动保存定时器
 
             // ==================== 存储键 ====================
@@ -1075,10 +1088,12 @@
                         preferences: [],
                         basicInfo: { age: null, job: null, pets: [], tools: [] },
                         aiLearning: [],
+                        facts: [],
                     });
                     if (!Array.isArray(this.longTerm.expenses)) this.longTerm.expenses = [];
                     if (!Array.isArray(this.longTerm.preferences)) this.longTerm.preferences = [];
                     if (!Array.isArray(this.longTerm.aiLearning)) this.longTerm.aiLearning = [];
+                    if (!Array.isArray(this.longTerm.facts)) this.longTerm.facts = [];
                     if (!this.longTerm.basicInfo || typeof this.longTerm.basicInfo !== 'object') {
                         this.longTerm.basicInfo = { age: null, job: null, pets: [], tools: [] };
                     }
@@ -1174,10 +1189,10 @@
                             source,
                         });
                     }
-                    // 限制短期记忆条目数
-                    if (this.shortTerm.entries.length > 100) {
+                    // 限制短期记忆条目数（最多50条，超出则丢弃最旧的）
+                    if (this.shortTerm.entries.length > MAX_SHORT_TERM_ENTRIES) {
                         this.shortTerm.entries.sort((a, b) => b.timestamp - a.timestamp);
-                        this.shortTerm.entries = this.shortTerm.entries.slice(0, 80);
+                        this.shortTerm.entries = this.shortTerm.entries.slice(0, MAX_SHORT_TERM_ENTRIES);
                     }
                     this._saveAll();
                 }
@@ -1200,9 +1215,6 @@
                     );
                     if (!dup) {
                         this.longTerm.expenses.push(entry);
-                        if (this.longTerm.expenses.length > 200) {
-                            this.longTerm.expenses = this.longTerm.expenses.slice(-150);
-                        }
                     }
                     this._saveAll();
                 }
@@ -1267,8 +1279,25 @@
                     } else {
                         this.longTerm.aiLearning.push(entry);
                     }
-                    if (this.longTerm.aiLearning.length > 50) {
-                        this.longTerm.aiLearning = this.longTerm.aiLearning.slice(-40);
+                    this._saveAll();
+                }
+
+                /** 长期记忆 - 通用事实 */
+                addLongTermFact(category, content) {
+                    if (!content || typeof content !== 'string' || !content.trim()) return;
+                    const entry = {
+                        category: category || '通用',
+                        content: content.trim(),
+                        timestamp: Date.now(),
+                    };
+                    const dup = this.longTerm.facts.find(f =>
+                        f.category === entry.category && this._similarity(f.content, entry.content) > 0.7
+                    );
+                    if (dup) {
+                        dup.content = this._mergeContent(dup.content, entry.content);
+                        dup.timestamp = Date.now();
+                    } else {
+                        this.longTerm.facts.push(entry);
                     }
                     this._saveAll();
                 }
@@ -1292,9 +1321,6 @@
                     } else {
                         this.volatile.plans.push(entry);
                     }
-                    if (this.volatile.plans.length > 30) {
-                        this.volatile.plans = this.volatile.plans.slice(-20);
-                    }
                     this._saveAll();
                     console.log('📝 计划已添加:', type, content, '当前计划数:', this.volatile.plans.length);
                 }
@@ -1316,9 +1342,6 @@
                         dup.createdAt = Date.now();
                     } else {
                         this.volatile.temporaryEvents.push(entry);
-                    }
-                    if (this.volatile.temporaryEvents.length > 50) {
-                        this.volatile.temporaryEvents = this.volatile.temporaryEvents.slice(-35);
                     }
                     this._saveAll();
                     console.log('📝 [步骤4：临时事件保存成功！当前数据:', this.volatile.temporaryEvents);
@@ -1456,6 +1479,15 @@
                         parts.push('【AI已学习内容】' + learnStr);
                     }
 
+                    // 长期记忆 - 通用事实
+                    if ((this.longTerm.facts || []).length > 0) {
+                        const factStr = this.longTerm.facts
+                            .slice(-10)
+                            .map(f => `[${f.category || '通用'}]${f.content}`)
+                            .join('；');
+                        parts.push('【长期事实】' + factStr);
+                    }
+
                     // 短期记忆（最近）
                     const recentShort = (this.shortTerm.entries || [])
                         .slice(-15)
@@ -1486,7 +1518,7 @@
                 clearAll() {
                     this.shortTerm = { entries: [] };
                     this.longTerm = { expenses: [], preferences: [], basicInfo: { age: null, job: null,
-                            pets: [], tools: [] }, aiLearning: [] };
+                            pets: [], tools: [] }, aiLearning: [], facts: [] };
                     this.volatile = { plans: [], temporaryEvents: [] };
                     this._saveAll();
                 }
@@ -1519,6 +1551,17 @@
                 _applyMemoryData(memData) {
                     if (!memData) return;
 
+                    const asArray = value => Array.isArray(value) ? value : [value];
+                    const textOf = item => {
+                        if (typeof item === 'string') return item;
+                        if (!item || typeof item !== 'object') return '';
+                        return item.content || item.detail || item.description || item.text || item.value || '';
+                    };
+                    const categoryOf = (item, fallback = '通用') => {
+                        if (!item || typeof item !== 'object') return fallback;
+                        return item.category || item.type || item.topic || fallback;
+                    };
+
                     if (memData.shortTerm) {
                         const items = Array.isArray(memData.shortTerm) ? memData.shortTerm : [memData.shortTerm];
                         items.forEach(item => {
@@ -1545,10 +1588,66 @@
                         const learn = memData.aiLearning;
                         this.addAiLearning(learn.topic, learn.content);
                     }
+                    if (memData.fact) {
+                        asArray(memData.fact).forEach(item => {
+                            const content = textOf(item);
+                            if (content) this.addLongTermFact(categoryOf(item), content);
+                        });
+                    }
+                    if (memData.facts) {
+                        asArray(memData.facts).forEach(item => {
+                            const content = textOf(item);
+                            if (content) this.addLongTermFact(categoryOf(item), content);
+                        });
+                    }
+                    if (memData.longTerm) {
+                        const lt = memData.longTerm;
+                        if (typeof lt === 'string') {
+                            this.addLongTermFact('通用', lt);
+                        } else if (Array.isArray(lt)) {
+                            lt.forEach(item => {
+                                const content = textOf(item);
+                                if (content) this.addLongTermFact(categoryOf(item), content);
+                            });
+                        } else if (typeof lt === 'object') {
+                            if (lt.basicInfo) {
+                                Object.keys(lt.basicInfo).forEach(key => {
+                                    if (lt.basicInfo[key] !== undefined && lt.basicInfo[key] !== null) {
+                                        this.updateBasicInfo(key, lt.basicInfo[key]);
+                                    }
+                                });
+                            }
+                            if (lt.expense) this.addExpense(lt.expense.amount, lt.expense.category, lt.expense.description || lt.expense.content);
+                            if (lt.expenses) asArray(lt.expenses).forEach(exp =>
+                                this.addExpense(exp.amount, exp.category, exp.description || exp.content)
+                            );
+                            if (lt.preference) this.addPreference(lt.preference.category, lt.preference.detail || lt.preference.content);
+                            if (lt.preferences) asArray(lt.preferences).forEach(pref =>
+                                this.addPreference(pref.category, pref.detail || pref.content)
+                            );
+                            if (lt.aiLearning) asArray(lt.aiLearning).forEach(learn =>
+                                this.addAiLearning(learn.topic || learn.category, learn.content || learn.detail)
+                            );
+                            if (lt.fact) asArray(lt.fact).forEach(item => {
+                                const content = textOf(item);
+                                if (content) this.addLongTermFact(categoryOf(item), content);
+                            });
+                            if (lt.facts) asArray(lt.facts).forEach(item => {
+                                const content = textOf(item);
+                                if (content) this.addLongTermFact(categoryOf(item), content);
+                            });
+                            const looseContent = textOf(lt);
+                            if (looseContent) this.addLongTermFact(categoryOf(lt), looseContent);
+                        }
+                    }
                     const planItems = [];
                     if (memData.plan) planItems.push(memData.plan);
                     if (memData.plans) {
                         const extra = Array.isArray(memData.plans) ? memData.plans : [memData.plans];
+                        planItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.plan) {
+                        const extra = Array.isArray(memData.volatile.plan) ? memData.volatile.plan : [memData.volatile.plan];
                         planItems.push(...extra);
                     }
                     if (memData.volatile && memData.volatile.plans) {
@@ -1568,14 +1667,36 @@
 
                     const tempEventItems = [];
                     if (memData.temporaryEvent) tempEventItems.push(memData.temporaryEvent);
+                    if (memData.tempEvent) tempEventItems.push(memData.tempEvent);
+                    if (memData.event) tempEventItems.push(memData.event);
                     if (memData.temporaryEvents) {
                         const extra = Array.isArray(memData.temporaryEvents) ? memData.temporaryEvents : [memData.temporaryEvents];
+                        tempEventItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.temporaryEvent) {
+                        const extra = Array.isArray(memData.volatile.temporaryEvent) ?
+                            memData.volatile.temporaryEvent : [memData.volatile.temporaryEvent];
+                        tempEventItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.tempEvent) {
+                        const extra = Array.isArray(memData.volatile.tempEvent) ?
+                            memData.volatile.tempEvent : [memData.volatile.tempEvent];
+                        tempEventItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.event) {
+                        const extra = Array.isArray(memData.volatile.event) ? memData.volatile.event : [memData.volatile.event];
                         tempEventItems.push(...extra);
                     }
                     if (memData.volatile && memData.volatile.temporaryEvents) {
                         const extra = Array.isArray(memData.volatile.temporaryEvents) ?
                             memData.volatile.temporaryEvents : [memData.volatile.temporaryEvents];
                         tempEventItems.push(...extra);
+                    }
+                    if (memData.volatile && typeof memData.volatile === 'string') {
+                        tempEventItems.push({ content: memData.volatile });
+                    } else if (memData.volatile && !planItems.length && !tempEventItems.length) {
+                        const content = textOf(memData.volatile);
+                        if (content) tempEventItems.push(memData.volatile);
                     }
                     tempEventItems.forEach(te => {
                         console.log('🔄 收到临时事件更新:', te);
@@ -1761,6 +1882,8 @@
                     "✅ 每次回复末尾必须添加记忆更新标记！即使没有新记忆也要加！",
                     "✅ 记忆更新标记是隐藏的，用户看不到，但代码会解析！",
                     "✅ 标记格式：<!--MEMORY_UPDATE:JSON数据-->，JSON必须完整有效！",
+                    "✅ 长期记忆优先使用 {\"longTerm\":{\"facts\":[{\"category\":\"类别\",\"content\":\"内容\"}]}}，用户喜好可用 preference，基本信息可用 basicInfo。",
+                    "✅ 波动记忆优先使用 {\"volatile\":{\"plans\":[...]}} 或 {\"volatile\":{\"temporaryEvents\":[...]}}。",
                     "",
                     "示例：",
                     "用户说：我计划明天去跑步",
@@ -1772,11 +1895,14 @@
                     "用户说：我喜欢喝咖啡",
                     "你的回复：好的。<!--MEMORY_UPDATE:{\"preference\":{\"category\":\"饮食\",\"detail\":\"喜欢喝咖啡\"}}-->",
                     "",
+                    "用户说：把这件事存入长期记忆",
+                    "你的回复：已存入长期记忆。<!--MEMORY_UPDATE:{\"longTerm\":{\"facts\":[{\"category\":\"用户指定\",\"content\":\"这件事\"}]}}-->",
+                    "",
                     "用户说：你好",
                     "你的回复：你好！有什么可以帮你的？<!--MEMORY_UPDATE:{}-->",
                     "",
                     "## 记忆类型说明",
-                    "1. **短期记忆**：日常对话中的关键信息，保留7天。需精简提取后存储。",
+                    "1. **短期记忆**：日常对话中的关键信息，保留7天，最多存储50条。需精简提取后存储。",
                     "2. **长期记忆**：",
                     "   - 开销（必须带时间戳）",
                     "   - 用户喜好",
@@ -1876,9 +2002,6 @@
                 renderMessage('user', userText, userTimestamp);
                 const userMsgForHistory = { role: 'user', content: userText, timestamp: userTimestamp };
                 conversationHistory.push(userMsgForHistory);
-                if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
-                    conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
-                }
 
                 // 也在短期记忆中记录
                 memorySystem.addShortTerm(userText, 'user_message');
@@ -1892,7 +2015,7 @@
                 const systemPrompt = buildSystemPrompt();
                 
                 // 为对话历史添加简洁时间前缀，让AI知道消息时间但不冗长
-                const historyWithTime = conversationHistory.slice(-30).map(msg => {
+                const historyWithTime = conversationHistory.map(msg => {
                     const timeStr = msg.timestamp 
                         ? new Date(msg.timestamp).toLocaleString('zh-CN', { 
                             month: '2-digit', 
@@ -1940,9 +2063,6 @@
                         timestamp: aiTimestamp 
                     };
                     conversationHistory.push(aiMsgForHistory);
-                    if (conversationHistory.length > MAX_HISTORY_MESSAGES) {
-                        conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
-                    }
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
                     const cleanResponse = stripMemoryUpdateMarkers(aiResponse);
@@ -1980,9 +2100,28 @@
 
             function persistChatHistory() {
                 try {
-                    const toSave = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
-                    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(toSave));
+                    localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(conversationHistory));
                 } catch (e) { /* ignore */ }
+            }
+
+            function countLongTermEntries() {
+                const bi = memorySystem.longTerm.basicInfo || {};
+                let n = 0;
+                if (bi.age != null && bi.age !== '') n++;
+                if (bi.job != null && bi.job !== '') n++;
+                n += (bi.pets || []).length;
+                n += (bi.tools || []).length;
+                n += (memorySystem.longTerm.preferences || []).length;
+                n += (memorySystem.longTerm.aiLearning || []).length;
+                n += (memorySystem.longTerm.expenses || []).length;
+                n += (memorySystem.longTerm.facts || []).length;
+                return n;
+            }
+
+            function countVolatileEntries() {
+                const plans = (memorySystem.volatile.plans || []).filter(p => p && p.content).length;
+                const events = (memorySystem.volatile.temporaryEvents || []).filter(e => e && e.content).length;
+                return plans + events;
             }
 
             // ==================== 更新记忆面板 ====================
@@ -1990,22 +2129,28 @@
                 const memShort = $('#memShort');
                 const memLong = $('#memLong');
                 const memVolatile = $('#memVolatile');
+                const sidebarStats = $('#sidebarStats');
                 if (!memShort || !memLong || !memVolatile) return;
+
+                if (sidebarStats) {
+                    sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条';
+                }
 
                 const sevenDays = 7 * 24 * 60 * 60 * 1000;
                 const now = Date.now();
+                const storedShortCount = (memorySystem.shortTerm.entries || []).length;
                 const allShortEntries = (memorySystem.shortTerm.entries || []).filter(e => {
                     const expiry = e.expiresAt || ((e.timestamp || 0) + sevenDays);
                     return now < expiry;
                 });
+                const shortCountLabel = storedShortCount + '/' + MAX_SHORT_TERM_ENTRIES;
                 const shortEntries = allShortEntries.slice(-20).reverse();
                 if (shortEntries.length === 0) {
                     memShort.innerHTML =
-                        '<h4><span class="dot dot-short"></span>短期记忆（7天）</h4><div class="empty-hint">暂无短期记忆</div>';
+                        '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortCountLabel + '条）</h4>' +
+                        '<div class="empty-hint">暂无有效短期记忆（已存 ' + storedShortCount + ' 条）</div>';
                 } else {
-                    const countLabel = allShortEntries.length > shortEntries.length ?
-                        `${shortEntries.length}/${allShortEntries.length}` : String(allShortEntries.length);
-                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + countLabel + '条）</h4>';
+                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortCountLabel + '条）</h4>';
                     shortEntries.forEach(e => {
                         const text = String(e.content || '');
                         const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleDateString('zh-CN') : '未知';
@@ -2023,7 +2168,9 @@
                 const prefs = memorySystem.longTerm.preferences || [];
                 const learning = memorySystem.longTerm.aiLearning || [];
                 const expenses = memorySystem.longTerm.expenses || [];
-                let longHTML = '<h4><span class="dot dot-long"></span>长期记忆</h4>';
+                const facts = memorySystem.longTerm.facts || [];
+                const longCount = countLongTermEntries();
+                let longHTML = '<h4><span class="dot dot-long"></span>长期记忆（' + longCount + '条）</h4>';
                 let hasLong = false;
 
                 const biStr = [];
@@ -2047,6 +2194,11 @@
                         '[' + l.topic + ']' + l.content).join('；')) + '</div>';
                     hasLong = true;
                 }
+                if (facts.length > 0) {
+                    longHTML += '<div class="mem-item"><strong>长期事实</strong>: ' + escapeHTML(facts.slice(-8).map(f =>
+                        '[' + (f.category || '通用') + ']' + f.content).join('；')) + '</div>';
+                    hasLong = true;
+                }
                 if (expenses.length > 0) {
                     const recentExp = expenses.slice(-5).reverse();
                     longHTML += '<div class="mem-item"><strong>近期开销</strong>: ' + escapeHTML(recentExp.map(e =>
@@ -2060,7 +2212,8 @@
                 // 波动记忆
                 const plans = memorySystem.volatile.plans || [];
                 const tempEvents = memorySystem.volatile.temporaryEvents || [];
-                let volHTML = '<h4><span class="dot dot-volatile"></span>波动记忆</h4>';
+                const volCount = countVolatileEntries();
+                let volHTML = '<h4><span class="dot dot-volatile"></span>波动记忆（' + volCount + '条）</h4>';
                 let hasVol = false;
                 const validPlans = plans.filter(p => p && p.content);
                 if (validPlans.length > 0) {
@@ -2253,7 +2406,6 @@
                             
                             if (chatImported > 0 || hasOverlappingTimestamps) {
                                 conversationHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-                                conversationHistory = conversationHistory.slice(-MAX_HISTORY_MESSAGES);
                                 localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify(conversationHistory));
                                 hasChatChanges = true;
                             }
@@ -2268,6 +2420,11 @@
                                     existingShort.add(entry.content);
                                 }
                             });
+                            if (memorySystem.shortTerm.entries.length > MAX_SHORT_TERM_ENTRIES) {
+                                memorySystem.shortTerm.entries.sort((a, b) => b.timestamp - a.timestamp);
+                                memorySystem.shortTerm.entries =
+                                    memorySystem.shortTerm.entries.slice(0, MAX_SHORT_TERM_ENTRIES);
+                            }
                         }
 
                         if (imported.longTerm) {
@@ -2339,6 +2496,23 @@
                                     );
                                     if (!dup) {
                                         memorySystem.longTerm.aiLearning.push(learn);
+                                        longImported++;
+                                    }
+                                });
+                            }
+                            if (imported.longTerm.facts) {
+                                if (!Array.isArray(memorySystem.longTerm.facts)) memorySystem.longTerm.facts = [];
+                                imported.longTerm.facts.forEach(fact => {
+                                    if (!fact || !fact.content) return;
+                                    const dup = memorySystem.longTerm.facts.find(f =>
+                                        f.category === fact.category && f.content === fact.content
+                                    );
+                                    if (!dup) {
+                                        memorySystem.longTerm.facts.push({
+                                            category: fact.category || '通用',
+                                            content: fact.content,
+                                            timestamp: fact.timestamp || Date.now(),
+                                        });
                                         longImported++;
                                     }
                                 });
@@ -2444,9 +2618,9 @@
                     if (cached) {
                         const parsed = JSON.parse(cached);
                         if (Array.isArray(parsed) && parsed.length > 0) {
-                            conversationHistory = parsed.slice(-MAX_HISTORY_MESSAGES);
+                            conversationHistory = parsed;
                             // 渲染缓存的对话
-                            parsed.forEach(msg => {
+                            conversationHistory.forEach(msg => {
                                 if (msg.role === 'user' || msg.role === 'assistant') {
                                     const role = msg.role === 'assistant' ? 'ai' : 'user';
                                     renderMessage(role, msg.content, msg.timestamp);
@@ -2467,11 +2641,10 @@
                 }, 60000);
 
                 console.log('🧠 AI记忆聊天系统已就绪');
-                console.log('  - 短期记忆:', memorySystem.shortTerm.entries.length, '条');
-                console.log('  - 长期记忆:', memorySystem.longTerm.preferences.length + memorySystem.longTerm.aiLearning
-                    .length, '条');
-                console.log('  - 波动记忆:', memorySystem.volatile.plans.length + memorySystem.volatile.temporaryEvents
-                    .length, '条');
+                console.log('  - 对话记录:', conversationHistory.length, '条（无上限）');
+                console.log('  - 短期记忆:', memorySystem.shortTerm.entries.length, '/', MAX_SHORT_TERM_ENTRIES, '条');
+                console.log('  - 长期记忆:', countLongTermEntries(), '条（无上限）');
+                console.log('  - 波动记忆:', countVolatileEntries(), '条（无上限）');
                 console.log('  请设置DeepSeek API Key后开始对话。');
             }
 
