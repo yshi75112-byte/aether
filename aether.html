@@ -1096,12 +1096,12 @@
                         longTerm: {
                             expenses: this.longTerm.expenses.length,
                             preferences: this.longTerm.preferences.length,
-                            aiLearning: this.longTerm.aiLearning.length
+                            aiLearning: this.longTerm.aiLearning.length,
                         },
                         volatile: {
                             plans: this.volatile.plans.length,
-                            temporaryEvents: this.volatile.temporaryEvents.length
-                        }
+                            temporaryEvents: this.volatile.temporaryEvents.length,
+                        },
                     });
                 }
 
@@ -1114,14 +1114,10 @@
                 }
 
                 _saveAll() {
-                    console.log('💾 [保存步骤] 开始保存数据...');
-                    console.log('💾 待保存的 volatile:', JSON.parse(JSON.stringify(this.volatile)));
                     try {
                         localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                         localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                         localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
-                        console.log('💾 保存成功！检查 localStorage 中的值:');
-                        console.log('💾 volatile from localStorage:', JSON.parse(localStorage.getItem(STORAGE_KEYS.VOLATILE)));
                     } catch (e) {
                         console.warn('记忆存储空间不足', e);
                         this._cleanExpired();
@@ -1505,10 +1501,106 @@
                         exportedAt: new Date().toISOString(),
                     };
                 }
+
+                /** 从 AI 回复文本中解析并应用 MEMORY_UPDATE 标记 */
+                parseMemoryUpdate(content) {
+                    if (!content) return;
+                    const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
+                    if (!match) return;
+                    try {
+                        const memData = JSON.parse(match[1].trim());
+                        console.log('📌 检测到记忆更新标记');
+                        this._applyMemoryData(memData);
+                    } catch (e) {
+                        console.warn('⚠ 记忆更新 JSON 解析失败:', e, match[1].substring(0, 120));
+                    }
+                }
+
+                _applyMemoryData(memData) {
+                    if (!memData) return;
+
+                    if (memData.shortTerm) {
+                        const items = Array.isArray(memData.shortTerm) ? memData.shortTerm : [memData.shortTerm];
+                        items.forEach(item => {
+                            if (item && item.content) this.addShortTerm(item.content, 'ai_extracted');
+                        });
+                    }
+                    if (memData.expense) {
+                        const exp = memData.expense;
+                        this.addExpense(exp.amount, exp.category, exp.description);
+                    }
+                    if (memData.preference) {
+                        const pref = memData.preference;
+                        this.addPreference(pref.category, pref.detail);
+                    }
+                    if (memData.basicInfo) {
+                        const bi = memData.basicInfo;
+                        Object.keys(bi).forEach(key => {
+                            if (bi[key] !== undefined && bi[key] !== null) {
+                                this.updateBasicInfo(key, bi[key]);
+                            }
+                        });
+                    }
+                    if (memData.aiLearning) {
+                        const learn = memData.aiLearning;
+                        this.addAiLearning(learn.topic, learn.content);
+                    }
+                    const planItems = [];
+                    if (memData.plan) planItems.push(memData.plan);
+                    if (memData.plans) {
+                        const extra = Array.isArray(memData.plans) ? memData.plans : [memData.plans];
+                        planItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.plans) {
+                        const extra = Array.isArray(memData.volatile.plans) ? memData.volatile.plans : [memData.volatile.plans];
+                        planItems.push(...extra);
+                    }
+                    planItems.forEach(plan => {
+                        console.log('🔄 收到计划更新:', plan);
+                        const content = plan.content || plan.detail || plan.description;
+                        if (!content) {
+                            console.warn('⚠ 计划缺少 content:', plan);
+                            return;
+                        }
+                        const type = plan.type || plan.category || '其他';
+                        this.addPlan(type, content);
+                    });
+
+                    const tempEventItems = [];
+                    if (memData.temporaryEvent) tempEventItems.push(memData.temporaryEvent);
+                    if (memData.temporaryEvents) {
+                        const extra = Array.isArray(memData.temporaryEvents) ? memData.temporaryEvents : [memData.temporaryEvents];
+                        tempEventItems.push(...extra);
+                    }
+                    if (memData.volatile && memData.volatile.temporaryEvents) {
+                        const extra = Array.isArray(memData.volatile.temporaryEvents) ?
+                            memData.volatile.temporaryEvents : [memData.volatile.temporaryEvents];
+                        tempEventItems.push(...extra);
+                    }
+                    tempEventItems.forEach(te => {
+                        console.log('🔄 收到临时事件更新:', te);
+                        const content = te.content || te.detail || te.description;
+                        if (!content) {
+                            console.warn('⚠ 临时事件缺少 content:', te);
+                            return;
+                        }
+                        this.addTemporaryEvent(content, te.estimatedExpiry ?? te.expiry ?? null);
+                    });
+                    if (memData.removePlan) {
+                        this.removePlan(memData.removePlan);
+                    }
+                    if (memData.removeTemporaryEvent) {
+                        this.removeTemporaryEvent(memData.removeTemporaryEvent);
+                    }
+                    if (memData.userNegation) {
+                        this.handleUserNegation(memData.userNegation);
+                    }
+                }
             }
 
             // 初始化记忆系统
-            const memorySystem = new MemorySystem();
+            window.memorySystem = new MemorySystem();
+            const memorySystem = window.memorySystem;
 
             // ==================== 设置管理 ====================
             function loadSettings() {
@@ -1578,11 +1670,7 @@
                 // 始终剥离记忆标记，避免在聊天气泡中显示
                 let displayContent = stripMemoryUpdateMarkers(content);
                 if (applyMemoryUpdate) {
-                    const memData = extractMemoryUpdatePayload(content);
-                    if (memData) {
-                        console.log('📌 检测到记忆更新标记');
-                        processMemoryUpdate(memData);
-                    }
+                    memorySystem.parseMemoryUpdate(content);
                 }
 
                 // 简单的Markdown处理
@@ -1647,96 +1735,9 @@
                 return content.replace(/<!--\s*MEMORY_UPDATE\s*:[\s\S]*?\s*-->/gi, '').trim();
             }
 
-            function applyPlanUpdate(plan) {
-                if (!plan || typeof plan !== 'object') return;
-                const content = plan.content || plan.detail || plan.description;
-                if (!content) {
-                    console.warn('⚠ 计划缺少 content:', plan);
-                    return;
-                }
-                const type = plan.type || plan.category || '其他';
-                memorySystem.addPlan(type, content);
-            }
-
-            function applyTemporaryEventUpdate(te) {
-                if (!te || typeof te !== 'object') return;
-                const content = te.content || te.detail || te.description;
-                if (!content) {
-                    console.warn('⚠ 临时事件缺少 content:', te);
-                    return;
-                }
-                memorySystem.addTemporaryEvent(content, te.estimatedExpiry ?? te.expiry ?? null);
-            }
-
             // ==================== 处理记忆更新指令 ====================
             function processMemoryUpdate(memData) {
-                if (!memData) return;
-
-                if (memData.shortTerm) {
-                    const items = Array.isArray(memData.shortTerm) ? memData.shortTerm : [memData.shortTerm];
-                    items.forEach(item => {
-                        if (item && item.content) memorySystem.addShortTerm(item.content, 'ai_extracted');
-                    });
-                }
-                if (memData.expense) {
-                    const exp = memData.expense;
-                    memorySystem.addExpense(exp.amount, exp.category, exp.description);
-                }
-                if (memData.preference) {
-                    const pref = memData.preference;
-                    memorySystem.addPreference(pref.category, pref.detail);
-                }
-                if (memData.basicInfo) {
-                    const bi = memData.basicInfo;
-                    Object.keys(bi).forEach(key => {
-                        if (bi[key] !== undefined && bi[key] !== null) {
-                            memorySystem.updateBasicInfo(key, bi[key]);
-                        }
-                    });
-                }
-                if (memData.aiLearning) {
-                    const learn = memData.aiLearning;
-                    memorySystem.addAiLearning(learn.topic, learn.content);
-                }
-                const planItems = [];
-                if (memData.plan) planItems.push(memData.plan);
-                if (memData.plans) {
-                    const extra = Array.isArray(memData.plans) ? memData.plans : [memData.plans];
-                    planItems.push(...extra);
-                }
-                if (memData.volatile && memData.volatile.plans) {
-                    const extra = Array.isArray(memData.volatile.plans) ? memData.volatile.plans : [memData.volatile.plans];
-                    planItems.push(...extra);
-                }
-                planItems.forEach(plan => {
-                    console.log('🔄 收到计划更新:', plan);
-                    applyPlanUpdate(plan);
-                });
-
-                const tempEventItems = [];
-                if (memData.temporaryEvent) tempEventItems.push(memData.temporaryEvent);
-                if (memData.temporaryEvents) {
-                    const extra = Array.isArray(memData.temporaryEvents) ? memData.temporaryEvents : [memData.temporaryEvents];
-                    tempEventItems.push(...extra);
-                }
-                if (memData.volatile && memData.volatile.temporaryEvents) {
-                    const extra = Array.isArray(memData.volatile.temporaryEvents) ?
-                        memData.volatile.temporaryEvents : [memData.volatile.temporaryEvents];
-                    tempEventItems.push(...extra);
-                }
-                tempEventItems.forEach(te => {
-                    console.log('🔄 收到临时事件更新:', te);
-                    applyTemporaryEventUpdate(te);
-                });
-                if (memData.removePlan) {
-                    memorySystem.removePlan(memData.removePlan);
-                }
-                if (memData.removeTemporaryEvent) {
-                    memorySystem.removeTemporaryEvent(memData.removeTemporaryEvent);
-                }
-                if (memData.userNegation) {
-                    memorySystem.handleUserNegation(memData.userNegation);
-                }
+                memorySystem._applyMemoryData(memData);
             }
 
             // ==================== 构建系统提示 ====================
@@ -1846,7 +1847,9 @@
                 if (!data.choices || !data.choices[0] || !data.choices[0].message) {
                     throw new Error('API返回格式异常');
                 }
-                return data.choices[0].message.content;
+                const content = data.choices[0].message.content;
+                window.memorySystem.parseMemoryUpdate(content);
+                return content;
             }
 
             // ==================== 发送消息 ====================
@@ -1930,7 +1933,7 @@
 
                     // 渲染AI回复（会自动处理记忆更新标记）
                     const aiTimestamp = Date.now();
-                    renderMessage('ai', aiResponse, aiTimestamp, { applyMemoryUpdate: true });
+                    renderMessage('ai', aiResponse, aiTimestamp);
                     const aiMsgForHistory = { 
                         role: 'assistant', 
                         content: stripMemoryUpdateMarkers(aiResponse),
