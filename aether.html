@@ -1966,14 +1966,19 @@
                     stream: false,
                 };
 
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${settings.apiKey}`,
-                    },
-                    body: JSON.stringify(requestBody),
-                });
+                let response;
+                try {
+                    response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${settings.apiKey}`,
+                        },
+                        body: JSON.stringify(requestBody),
+                    });
+                } catch (networkError) {
+                    throw new Error('网络请求失败：请检查网络连接；如果浏览器提示跨域/CORS，请在设置中配置 CORS 代理后重试');
+                }
 
                 if (!response.ok) {
                     const errText = await response.text().catch(() => '未知错误');
@@ -2076,9 +2081,9 @@
                     console.log('🔍 [DEBUG] AI 返回内容最后100字符:', aiResponse.slice(-100));
                     
                     // 手动追加记忆更新标记
-                    aiResponse = aiResponse + ' ';
-                    renderMessage('ai', aiResponse, aiTimestamp, { applyMemoryUpdate: true });
-                    const cleanAiResponse = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(aiResponse));
+                    const aiResponseForRender = aiResponse + ' ';
+                    renderMessage('ai', aiResponseForRender, aiTimestamp, { applyMemoryUpdate: true });
+                    const cleanAiResponse = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(aiResponseForRender));
                     const aiMsgForHistory = { 
                         role: 'assistant', 
                         content: cleanAiResponse,
@@ -2088,7 +2093,7 @@
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
                     const cleanResponse = cleanAiResponse;
-                    const memPayload = extractMemoryUpdatePayload(aiResponse);
+                    const memPayload = extractMemoryUpdatePayload(aiResponseForRender);
                     const hasShortTermUpdate = memPayload && memPayload.shortTerm &&
                         (Array.isArray(memPayload.shortTerm) ? memPayload.shortTerm.length > 0 : !!memPayload.shortTerm);
                     if (cleanResponse.length > 10 && !hasShortTermUpdate) {
