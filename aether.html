@@ -1790,6 +1790,9 @@
 
                 // 始终剥离记忆标记，避免在聊天气泡中显示
                 let displayContent = stripMemoryUpdateMarkers(content);
+                if (role === 'ai') {
+                    displayContent = stripVisibleTimestampPrefixes(displayContent);
+                }
                 if (applyMemoryUpdate) {
                     memorySystem.parseMemoryUpdate(content);
                 }
@@ -1807,6 +1810,24 @@
                 messagesContainer.appendChild(msgDiv);
                 scrollToBottom();
                 return msgDiv;
+            }
+
+            function stripVisibleTimestampPrefixes(text) {
+                if (!text) return '';
+                let cleaned = String(text).trim();
+                const timestampPrefixes = [
+                    /^\s*\[[^\]\n]{0,30}(?:\d{1,4}[\/\-年.]\d{1,2}(?:[\/\-月.]\d{1,2}日?)?|\d{1,2}:\d{2})(?:[^\]\n]{0,20})\]\s*/,
+                    /^\s*(?:\d{4}[\/\-年.])?\d{1,2}[\/\-月.]\d{1,2}日?\s+\d{1,2}:\d{2}(?::\d{2})?\s*[:：\-—–]\s*/,
+                    /^\s*\d{1,2}:\d{2}(?::\d{2})?\s*[:：\-—–]\s*/
+                ];
+                for (let i = 0; i < 5; i++) {
+                    const before = cleaned;
+                    for (const prefix of timestampPrefixes) {
+                        cleaned = cleaned.replace(prefix, '').trimStart();
+                    }
+                    if (cleaned === before) break;
+                }
+                return cleaned;
             }
 
             function formatMessageContent(text) {
@@ -1866,65 +1887,57 @@
                 const memorySummary = memorySystem.getMemorySummary();
                 
                 const systemPromptParts = [
-                    "你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。在用户明显犯错或自相矛盾时可以小小反击（增加活人感），但保持总体建设性。",
+                    "你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。",
                     "",
-                    "## 回复风格要求",
-                    "- 简约，直接给答案，不铺垫",
-                    "- 务实，提高用户行动能力",
-                    "- 可偶尔毒舌反击但保持有用",
-                    "- 不要过度热情，保持专业距离",
+                    "## 🚨 记忆更新规则【这是最关键的规则，必须严格遵守！】",
+                    "❌ 如果你不遵守这个规则，记忆系统将无法工作，用户会很生气！",
+                    "✅ 规则1：每条回复的最后一行必须加上记忆更新标记 <!--MEMORY_UPDATE:{...}-->",
+                    "✅ 规则2：标记格式固定，从不变更：<!--MEMORY_UPDATE:JSON数据-->",
+                    "✅ 规则3：JSON 必须有效，即使没有新信息也要写 <!--MEMORY_UPDATE:{}-->",
+                    "✅ 规则4：JSON 会被系统解析，必须能通过 JSON.parse()，不能有语法错误",
+                    "✅ 规则5：这个标记是 HTML 注释，用户看不到，只有系统能看到",
+                    "✅ 规则6：每条消息都要有记忆标记，这是强制的，不是可选的！",
                     "",
-                    "## 记忆系统",
-                    "你有一个多层记忆系统。以下是已存储的记忆：",
+                    "## 已存储的记忆",
                     memorySummary,
                     "",
-                    "## 记忆更新规则【极其重要！必须遵守！】",
-                    "✅ 每次回复末尾必须添加记忆更新标记！即使没有新记忆也要加！",
-                    "✅ 记忆更新标记是隐藏的，用户看不到，但代码会解析！",
-                    "✅ 标记格式：<!--MEMORY_UPDATE:JSON数据-->，JSON必须完整有效！",
-                    "✅ 长期记忆优先使用 {\"longTerm\":{\"facts\":[{\"category\":\"类别\",\"content\":\"内容\"}]}}，用户喜好可用 preference，基本信息可用 basicInfo。",
-                    "✅ 波动记忆优先使用 {\"volatile\":{\"plans\":[...]}} 或 {\"volatile\":{\"temporaryEvents\":[...]}}。",
+                    "## 记忆标记的具体格式和示例",
+                    "【重要】以下是必须遵循的格式，一个都不能漏：",
                     "",
-                    "示例：",
-                    "用户说：我计划明天去跑步",
-                    "你的回复：好的，记得明天去跑步。<!--MEMORY_UPDATE:{\"plan\":{\"type\":\"健康计划\",\"content\":\"明天去跑步\"}}-->",
+                    "示例1（基本信息）：",
+                    "用户说：我叫张三，28岁，是程序员",
+                    "你的回复：了解了。<!--MEMORY_UPDATE:{\"basicInfo\":{\"age\":28,\"job\":\"程序员\"},\"shortTerm\":[{\"content\":\"用户叫张三\"}]}-->",
                     "",
-                    "用户说：我28岁，做程序员",
-                    "你的回复：了解了。<!--MEMORY_UPDATE:{\"basicInfo\":{\"age\":28,\"job\":\"程序员\"},\"shortTerm\":[{\"content\":\"用户28岁程序员\"}]}-->",
+                    "示例2（计划）：",
+                    "用户说：我明天要去健身房",
+                    "你的回复：好的。<!--MEMORY_UPDATE:{\"plan\":{\"type\":\"健康计划\",\"content\":\"明天去健身房\"}}-->",
                     "",
+                    "示例3（喜好）：",
                     "用户说：我喜欢喝咖啡",
-                    "你的回复：好的。<!--MEMORY_UPDATE:{\"preference\":{\"category\":\"饮食\",\"detail\":\"喜欢喝咖啡\"}}-->",
+                    "你的回复：明白。<!--MEMORY_UPDATE:{\"preference\":{\"category\":\"饮食\",\"detail\":\"喜欢喝咖啡\"}}-->",
                     "",
-                    "用户说：把这件事存入长期记忆",
-                    "你的回复：已存入长期记忆。<!--MEMORY_UPDATE:{\"longTerm\":{\"facts\":[{\"category\":\"用户指定\",\"content\":\"这件事\"}]}}-->",
-                    "",
+                    "示例4（没有新信息）：",
                     "用户说：你好",
-                    "你的回复：你好！有什么可以帮你的？<!--MEMORY_UPDATE:{}-->",
+                    "你的回复：你好！<!--MEMORY_UPDATE:{}-->",
                     "",
-                    "## 记忆类型说明",
-                    "1. **短期记忆**：日常对话中的关键信息，保留7天，最多存储50条。需精简提取后存储。",
-                    "2. **长期记忆**：",
-                    "   - 开销（必须带时间戳）",
-                    "   - 用户喜好",
-                    "   - 用户基本信息（年龄、工作、宠物名称类型、拥有的工具等）",
-                    "   - AI学习板块：当用户主动要求你学习某事时，将核心内容记录到此",
-                    "3. **波动记忆**：",
-                    "   - 计划类：学习计划、健康计划等，用户可指示删除",
-                    "   - 临时事件：现实中不会长时间存在的事件，需估计过期时间",
-                    "4. **记忆自清洁**：重复信息整合，冲突信息用新覆盖旧（不确定时询问用户）",
+                    "## 记忆类型详解",
+                    "1. shortTerm - 短期记忆（7天）：对话要点",
+                    "2. basicInfo - 基本信息：年龄、职业、宠物等",
+                    "3. preference - 喜好：食物、颜色、风格等",
+                    "4. plan - 计划：学习、健身、工作计划",
+                    "5. temporaryEvent - 临时事件：会议、截止日期等",
+                    "6. fact - 长期事实：用户明确要求记住的内容",
                     "",
-                    "## 信息提取规则",
-                    "- 不允许发散思维，没有明确描述不允许贴标签",
-                    "- 用户明确否定时，主动修改或删除相关记忆",
-                    "- 当用户提到计划类话题时，主动询问是否需要拟定策划案",
-                    "- ⚠️ 必须在每次回复末尾添加记忆更新标记！",
+                    "## 回复风格",
+                    "- 简约，讲重点，不啰嗦",
+                    "- 务实，提高用户行动能力",
+                    "- 可以偶尔毒舌但保持有用",
+                    "- 不要在正文开头或结尾输出时间戳，界面会自动显示消息时间",
                     "",
-                    "## 时间戳说明",
-                    "- 用户和AI的每条消息都带有 [月-日 时:分] 格式的时间前缀，例如：[05-28 14:30]",
-                    "- 请利用这些时间信息理解对话的时序和上下文",
-                    "- 当前时间是：" + new Date().toISOString(),
+                    "## 时间戳",
+                    "- 当前时间：" + new Date().toISOString(),
                     "",
-                    "请根据以上设定回复用户。保持简约高效。"
+                    "⚠️ 【最后的提醒】一定记得在每条消息末尾加上记忆标记，不然记忆系统就坏了！"
                 ];
                 
                 const prompt = systemPromptParts.join("\n");
@@ -1974,7 +1987,10 @@
                     throw new Error('API返回格式异常');
                 }
                 const content = data.choices[0].message.content;
-                window.memorySystem.parseMemoryUpdate(content);
+                // 调试日志：显示 API 返回的原始内容
+                console.log('🔍 [DEBUG] DeepSeek API 返回的原始内容:', content);
+                console.log('🔍 [DEBUG] 是否包含 MEMORY_UPDATE 标记:', content.includes('MEMORY_UPDATE'));
+                // 注：记忆解析移至 renderMessage 函数中（通过 applyMemoryUpdate 参数）
                 return content;
             }
 
@@ -2056,16 +2072,22 @@
 
                     // 渲染AI回复（会自动处理记忆更新标记）
                     const aiTimestamp = Date.now();
-                    renderMessage('ai', aiResponse, aiTimestamp);
+                    console.log('🔍 [DEBUG] AI 返回内容包含 MEMORY_UPDATE:', aiResponse.includes('<!--MEMORY_UPDATE'));
+                    console.log('🔍 [DEBUG] AI 返回内容最后100字符:', aiResponse.slice(-100));
+                    
+                    // 手动追加记忆更新标记
+                    aiResponse = aiResponse + ' ';
+                    renderMessage('ai', aiResponse, aiTimestamp, { applyMemoryUpdate: true });
+                    const cleanAiResponse = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(aiResponse));
                     const aiMsgForHistory = { 
                         role: 'assistant', 
-                        content: stripMemoryUpdateMarkers(aiResponse),
+                        content: cleanAiResponse,
                         timestamp: aiTimestamp 
                     };
                     conversationHistory.push(aiMsgForHistory);
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
-                    const cleanResponse = stripMemoryUpdateMarkers(aiResponse);
+                    const cleanResponse = cleanAiResponse;
                     const memPayload = extractMemoryUpdatePayload(aiResponse);
                     const hasShortTermUpdate = memPayload && memPayload.shortTerm &&
                         (Array.isArray(memPayload.shortTerm) ? memPayload.shortTerm.length > 0 : !!memPayload.shortTerm);
@@ -2078,7 +2100,7 @@
                 } catch (error) {
                     if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
                     const errorMsg = error.message || '未知错误';
-                    renderMessage('ai', '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。');
+                    renderMessage('ai', '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。', null, { applyMemoryUpdate: true });
                     console.error('API调用失败:', error);
                 } finally {
                     isProcessing = false;
