@@ -35,7 +35,7 @@ function readMemoryFile(filePath) {
 function mergeMemoryFiles(files) {
     const merged = {
         shortTerm: { entries: [] },
-        longTerm: { expenses: [], preferences: [], basicInfo: { age: null, job: null, pets: [], tools: [] }, aiLearning: [] },
+        longTerm: { expenses: [], preferences: [], basicInfo: { age: null, job: null, pets: [], tools: [] }, aiLearning: [], facts: [] },
         volatile: { plans: [], temporaryEvents: [] },
         chatHistory: [],
         mergedFrom: files.length,
@@ -93,9 +93,31 @@ function mergeMemoryFiles(files) {
                 merged.longTerm.aiLearning.push(item);
             }
         });
-        // 更新基本信息（取最新的）
+        (data.longTerm?.facts || []).forEach(item => {
+            const key = JSON.stringify(item);
+            if (!seenLongTerm.has(key)) {
+                seenLongTerm.add(key);
+                merged.longTerm.facts.push(item);
+            }
+        });
+        // 更新基本信息（标量取最新，数组去重合并）
         if (data.longTerm?.basicInfo) {
-            merged.longTerm.basicInfo = { ...merged.longTerm.basicInfo, ...data.longTerm.basicInfo };
+            Object.entries(data.longTerm.basicInfo).forEach(([key, value]) => {
+                if (Array.isArray(value)) {
+                    if (!Array.isArray(merged.longTerm.basicInfo[key])) {
+                        merged.longTerm.basicInfo[key] = [];
+                    }
+                    value.forEach(item => {
+                        const itemKey = JSON.stringify(item);
+                        const exists = merged.longTerm.basicInfo[key].some(existing =>
+                            JSON.stringify(existing) === itemKey
+                        );
+                        if (!exists) merged.longTerm.basicInfo[key].push(item);
+                    });
+                } else if (value !== null && value !== undefined && value !== '') {
+                    merged.longTerm.basicInfo[key] = value;
+                }
+            });
         }
 
         // 合并临时记忆
@@ -121,6 +143,7 @@ function mergeMemoryFiles(files) {
     merged.longTerm.expenses.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.preferences.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.aiLearning.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    merged.longTerm.facts.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.volatile.plans.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.volatile.temporaryEvents.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
@@ -149,6 +172,7 @@ function showStats(data) {
     console.log(`  │   ├── 支出记录: ${data.longTerm.expenses.length} 条`);
     console.log(`  │   ├── 偏好设置: ${data.longTerm.preferences.length} 条`);
     console.log(`  │   ├── 学习记录: ${data.longTerm.aiLearning.length} 条`);
+    console.log(`  │   ├── 长期事实: ${(data.longTerm.facts || []).length} 条`);
     console.log(`  │   └── 基本信息: ${[
         data.longTerm.basicInfo.age,
         data.longTerm.basicInfo.job,

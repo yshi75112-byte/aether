@@ -73,9 +73,25 @@ console.log('✅ 解析后的年龄:', afterParse.basicInfo?.age);
 console.log('✅ 解析后的城市:', afterParse.basicInfo?.hometown);
 console.log('✅ 解析后的喜好数量:', afterParse.preferences?.length);
 
-const shortTermAfter = JSON.parse(localStorage.getItem('mem_short_term') || '[]');
-const hasNewItem = shortTermAfter.some(item => item.content.includes('用户来自北京'));
+const shortTermAfter = JSON.parse(localStorage.getItem('mem_short_term') || '{"entries":[]}');
+const shortTermEntries = Array.isArray(shortTermAfter.entries) ? shortTermAfter.entries : [];
+const hasNewItem = shortTermEntries.some(item => item.content.includes('用户来自北京'));
 console.log('✅ 短期记忆是否包含新条目:', hasNewItem ? '是' : '否');
+
+// 测试 5.1: 验证删除记忆指令
+console.log('\n【测试 5.1】验证记忆删除指令');
+window.memorySystem.parseMemoryUpdate(`删除测试<!--MEMORY_UPDATE:{
+  "removeShortTerm":"用户来自北京",
+  "removePreference":{"category":"城市","detail":"喜欢北京"},
+  "removeBasicInfo":"hometown"
+}-->`);
+
+const afterDeleteLong = JSON.parse(localStorage.getItem('mem_long_term') || '{}');
+const afterDeleteShort = JSON.parse(localStorage.getItem('mem_short_term') || '{"entries":[]}');
+const deletedShortEntries = Array.isArray(afterDeleteShort.entries) ? afterDeleteShort.entries : [];
+console.log('✅ 短期记忆已删除:', deletedShortEntries.some(item => item.content.includes('用户来自北京')) ? '否' : '是');
+console.log('✅ 喜好已删除:', (afterDeleteLong.preferences || []).some(item => item.detail === '喜欢北京') ? '否' : '是');
+console.log('✅ 基本信息字段已删除:', afterDeleteLong.basicInfo?.hometown ? '否' : '是');
 
 // 测试 6: 验证 renderMessage 的记忆更新选项
 console.log('\n【测试 6】验证 renderMessage 记忆处理选项');
