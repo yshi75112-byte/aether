@@ -2364,12 +2364,39 @@
                     .trim();
             }
 
+            function isSelectedMemoryReferenceTarget(target) {
+                const normalized = String(target || '')
+                    .replace(/[\s,，。.!！:：；;、]/g, '')
+                    .replace(/(当前|现在|刚才|左侧|面板|已|被|这条|这个|那条|那个|的|记忆|计划|事件|内容|项目|事项|条目)/g, '');
+                return normalized === '选中';
+            }
+
+            function hasExplicitLocalDeleteIntent(text) {
+                const plainText = String(text || '').replace(/[“"「『'][^”"」』']{1,120}[”"」』']/g, '');
+                const hasDeleteVerb = /(删除|删掉|移除|清除|清理|忘掉|取消|别记|不要记|不用记|去掉)/.test(plainText);
+                if (!hasDeleteVerb) return false;
+
+                if (/(删除|删掉|移除|清除|清理|忘掉|取消|去掉)\s*(当前|现在|刚才|左侧|面板)?\s*(选中|这条|这个|那条|那个)/.test(plainText)) {
+                    return true;
+                }
+                if (/(删除|删掉|移除|清除|清理|忘掉|取消|去掉)[\s\S]{0,24}(记忆|计划|临时事件|事件|喜好|事实|开销|基本信息|待办)/.test(plainText)) {
+                    return true;
+                }
+                if (/(记忆|计划|临时事件|事件|喜好|事实|开销|基本信息|待办)[\s\S]{0,24}(删除|删掉|移除|清除|清理|忘掉|取消|去掉)/.test(plainText)) {
+                    return true;
+                }
+                if (/(别记|不要记|不用记)[\s\S]{0,24}(这条|这个|那条|那个|记忆|内容|事项|项目|了|啦|关于)/.test(plainText)) {
+                    return true;
+                }
+                return false;
+            }
+
             function applyLocalDeleteIntent(userText) {
-                if (!/(删除|删掉|移除|清除|清理|忘掉|取消|别记|不要记|不用记|去掉)/.test(userText)) {
+                if (!hasExplicitLocalDeleteIntent(userText)) {
                     return { handled: false, deleted: false, reason: 'no-delete-intent' };
                 }
                 const target = extractDeleteTargetFromUserText(userText);
-                if (!target || target.length < 2) {
+                if (!target || target.length < 2 || isSelectedMemoryReferenceTarget(target)) {
                     const selectedTarget = getSelectedMemoryDeleteTarget(userText);
                     if (!selectedTarget) {
                         const message = '我还没有感知到你选中了哪条记忆。请先在左侧记忆面板点选一条。';
