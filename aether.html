@@ -202,12 +202,39 @@
         .memory-section .mem-item {
             font-size: 0.75rem;
             color: var(--text-secondary);
-            padding: 4px 0;
+            padding: 6px 8px;
             border-bottom: 1px dotted #ece8df;
             line-height: 1.4;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+            outline: none;
+            position: relative;
         }
         .memory-section .mem-item:last-child {
             border-bottom: none;
+        }
+        .memory-section .mem-item:hover,
+        .memory-section .mem-item:focus-visible {
+            background: #f7f2e8;
+            color: var(--text-primary);
+        }
+        .memory-section .mem-item.selected {
+            background: #fff7e7;
+            color: var(--text-primary);
+            box-shadow: inset 0 0 0 1px #d4a76a;
+        }
+        .memory-section .mem-item.selected::before {
+            content: "✓";
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            color: #9a6b28;
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+        .memory-section .mem-item.selected .mem-meta {
+            padding-right: 14px;
         }
         .memory-section .mem-meta {
             font-size: 0.65rem;
@@ -1082,6 +1109,7 @@
             const MAX_SUMMARY_ITEMS = 40;
             const DEBUG_LOGS = false;
             let autoSaveTimer = null; // 自动保存定时器
+            let selectedMemory = null;
 
             // ==================== 存储键 ====================
             const STORAGE_KEYS = {
@@ -2246,6 +2274,69 @@
                     countVolatileEntries();
             }
 
+            function memorySelectionKey(target) {
+                if (!target) return '';
+                try {
+                    return JSON.stringify(target);
+                } catch (error) {
+                    return '';
+                }
+            }
+
+            function createMemorySelection(label, target) {
+                const key = memorySelectionKey(target);
+                return {
+                    key,
+                    label: String(label || ''),
+                    target,
+                    selectedAt: Date.now(),
+                };
+            }
+
+            function setSelectedMemory(selection) {
+                selectedMemory = selection || null;
+                window.selectedMemory = selectedMemory;
+
+                $$('.mem-item[data-memory-key]').forEach(item => {
+                    const itemKey = decodeURIComponent(item.dataset.memoryKey || '');
+                    const isSelected = !!selectedMemory && itemKey === selectedMemory.key;
+                    item.classList.toggle('selected', isSelected);
+                    item.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+                });
+
+                if (selectedMemory) {
+                    showToast('已选中记忆：' + selectedMemory.label.substring(0, 48));
+                }
+            }
+
+            function clearSelectedMemory() {
+                setSelectedMemory(null);
+            }
+
+            function getSelectedMemoryDeleteTarget(userText) {
+                if (!selectedMemory || !selectedMemory.target) return null;
+                const target = { ...selectedMemory.target };
+                const inferredScope = inferDeleteScope(userText || '');
+                if (inferredScope !== 'all') target.scope = inferredScope;
+                return target;
+            }
+
+            function selectedMemoryContextText() {
+                if (!selectedMemory) return '当前没有选中的记忆。';
+                return [
+                    '当前选中的记忆：',
+                    '- 显示文本：' + selectedMemory.label,
+                    '- 删除目标：' + JSON.stringify(selectedMemory.target),
+                ].join('\n');
+            }
+
+            function memoryItemHTML(label, meta, target) {
+                const selection = createMemorySelection(label, target);
+                const selectedClass = selectedMemory && selectedMemory.key === selection.key ? ' selected' : '';
+                const metaHTML = meta ? `<div class="mem-meta">${escapeHTML(meta)}</div>` : '';
+                return `<div class="mem-item${selectedClass}" role="button" tabindex="0" aria-pressed="${selectedClass ? 'true' : 'false'}" data-memory-key="${encodeURIComponent(selection.key)}" data-memory-label="${encodeURIComponent(selection.label)}" data-memory-target="${encodeURIComponent(JSON.stringify(target))}">${escapeHTML(label)}${metaHTML}</div>`;
+            }
+
             function inferDeleteScope(text) {
                 if (/短期/.test(text)) return 'shortTerm';
                 if (/长期|喜好|事实|学习|开销|基本信息/.test(text)) return 'longTerm';
@@ -2279,7 +2370,28 @@
                 }
                 const target = extractDeleteTargetFromUserText(userText);
                 if (!target || target.length < 2) {
-                    return { handled: false, deleted: false, reason: 'missing-target' };
+                    const selectedTarget = getSelectedMemoryDeleteTarget(userText);
+                    if (!selectedTarget) {
+                        const message = '我还没有感知到你选中了哪条记忆。请先在左侧记忆面板点选一条。';
+                        showToast(message);
+                        return { handled: true, deleted: false, reason: 'missing-selected-memory', message };
+                    }
+
+                    const before = countAllMemoryEntries();
+                    const selectedLabel = selectedMemory.label;
+                    memorySystem.removeMemory(selectedTarget);
+                    const after = countAllMemoryEntries();
+                    updateMemoryPanel();
+
+                    if (after < before) {
+                        clearSelectedMemory();
+                        const message = '已删除你选中的记忆：' + selectedLabel;
+                        showToast(message);
+                        return { handled: true, deleted: true, target: selectedLabel, before, after, message };
+                    }
+                    const message = '我感知到了选中的记忆，但没有找到可删除的匹配项：' + selectedLabel;
+                    showToast(message);
+                    return { handled: true, deleted: false, target: selectedLabel, before, after, message };
                 }
 
                 const before = countAllMemoryEntries();
@@ -2291,11 +2403,12 @@
                 updateMemoryPanel();
 
                 if (after < before) {
+                    clearSelectedMemory();
                     showToast('已从记忆中删除：' + target);
-                    return { handled: true, deleted: true, target, before, after };
+                    return { handled: true, deleted: true, target, before, after, message: '已从记忆中删除：' + target };
                 }
                 showToast('没有找到可删除的记忆：' + target);
-                return { handled: true, deleted: false, target, before, after };
+                return { handled: true, deleted: false, target, before, after, message: '没有找到可删除的记忆：' + target };
             }
 
             function extractSaveTargetFromUserText(text) {
@@ -2513,6 +2626,7 @@
                         hasEmptyLongHint: !!$('#memLong .empty-hint'),
                         hasEmptyVolatileHint: !!$('#memVolatile .empty-hint'),
                     },
+                    selection: selectedMemory,
                     counts: {
                         shortTermVisible: shortEntries.filter(e =>
                             e && e.content && (!e.expiresAt || e.expiresAt > Date.now())
@@ -2588,6 +2702,9 @@
                     "",
                     "## 已存储的记忆",
                     memorySummary,
+                    "",
+                    "## 当前界面选择",
+                    selectedMemoryContextText(),
                     "",
                     "## 本地代码检索",
                     "- 你可以通过系统提供的“本地代码检索上下文”了解助手所在文件夹内的代码片段。",
@@ -2726,11 +2843,6 @@
                 if (!userText) return;
 
                 const settings = loadSettings();
-                if (!settings.apiKey) {
-                    showToast('⚠ 请先在设置中配置API Key');
-                    openSettings();
-                    return;
-                }
 
                 // 禁用输入
                 isProcessing = true;
@@ -2757,6 +2869,38 @@
                 userInput.value = '';
                 userInput.style.height = 'auto';
                 updateMemoryPanel();
+
+                if (localDeleteResult.handled) {
+                    const localResponse = localDeleteResult.message || (localDeleteResult.deleted
+                        ? '已删除这条记忆。'
+                        : '没有找到可删除的记忆。');
+                    const aiTimestamp = Date.now();
+                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, { applyMemoryUpdate: true });
+                    conversationHistory.push({
+                        role: 'assistant',
+                        content: localResponse,
+                        timestamp: aiTimestamp,
+                    });
+                    persistChatHistory();
+                    isProcessing = false;
+                    sendBtn.disabled = false;
+                    userInput.disabled = false;
+                    setThinkingState(false);
+                    userInput.focus();
+                    updateMemoryPanel();
+                    return;
+                }
+
+                if (!settings.apiKey) {
+                    showToast('⚠ 请先在设置中配置API Key');
+                    openSettings();
+                    isProcessing = false;
+                    sendBtn.disabled = false;
+                    userInput.disabled = false;
+                    setThinkingState(false);
+                    userInput.focus();
+                    return;
+                }
 
                 // 构建API消息
                 const systemPrompt = buildSystemPrompt();
@@ -2913,8 +3057,10 @@
                         const expiryStr = e.expiresAt ?
                             new Date(e.expiresAt).toLocaleDateString('zh-CN') :
                             new Date((e.timestamp || now) + sevenDays).toLocaleDateString('zh-CN');
-                        html +=
-                            `<div class="mem-item">${escapeHTML(text.substring(0, 120))}<div class="mem-meta">${timeStr} · 过期: ${expiryStr}</div></div>`;
+                        html += memoryItemHTML(text.substring(0, 120), `${timeStr} · 过期: ${expiryStr}`, {
+                            scope: 'shortTerm',
+                            content: text,
+                        });
                     });
                     memShort.innerHTML = html;
                 }
@@ -2936,30 +3082,83 @@
                     .join(','));
                 if (bi.tools && bi.tools.length > 0) biStr.push('工具:' + bi.tools.join(','));
                 if (biStr.length > 0) {
-                    longHTML += '<div class="mem-item"><strong>基本信息</strong>: ' + escapeHTML(biStr.join('；')) +
-                        '</div>';
+                    if (bi.age) {
+                        longHTML += memoryItemHTML('基本信息 年龄: ' + bi.age, '', {
+                            scope: 'longTerm',
+                            field: 'age',
+                            value: bi.age,
+                        });
+                    }
+                    if (bi.job) {
+                        longHTML += memoryItemHTML('基本信息 工作: ' + bi.job, '', {
+                            scope: 'longTerm',
+                            field: 'job',
+                            value: bi.job,
+                        });
+                    }
+                    (bi.pets || []).forEach(p => {
+                        const petLabel = p && typeof p === 'object'
+                            ? (p.name || '未命名') + '(' + (p.type || '宠物') + ')'
+                            : String(p || '');
+                        longHTML += memoryItemHTML('基本信息 宠物: ' + petLabel, '', {
+                            scope: 'longTerm',
+                            field: 'pets',
+                            value: p,
+                        });
+                    });
+                    (bi.tools || []).forEach(tool => {
+                        longHTML += memoryItemHTML('基本信息 工具: ' + tool, '', {
+                            scope: 'longTerm',
+                            field: 'tools',
+                            value: tool,
+                        });
+                    });
                     hasLong = true;
                 }
                 if (prefs.length > 0) {
-                    longHTML += '<div class="mem-item"><strong>喜好</strong>: ' + escapeHTML(prefs.slice(-8).map(p =>
-                        '[' + p.category + ']' + p.detail).join('；')) + '</div>';
+                    prefs.slice(-8).forEach(p => {
+                        longHTML += memoryItemHTML('喜好 [' + (p.category || '通用') + '] ' + (p.detail || ''), '', {
+                            scope: 'longTerm',
+                            category: p.category,
+                            detail: p.detail,
+                        });
+                    });
                     hasLong = true;
                 }
                 if (learning.length > 0) {
-                    longHTML += '<div class="mem-item"><strong>AI学习</strong>: ' + escapeHTML(learning.slice(-6).map(l =>
-                        '[' + l.topic + ']' + l.content).join('；')) + '</div>';
+                    learning.slice(-6).forEach(l => {
+                        longHTML += memoryItemHTML('AI学习 [' + (l.topic || '通用') + '] ' + (l.content || ''), '', {
+                            scope: 'longTerm',
+                            topic: l.topic,
+                            content: l.content,
+                        });
+                    });
                     hasLong = true;
                 }
                 if (facts.length > 0) {
-                    longHTML += '<div class="mem-item"><strong>长期事实</strong>: ' + escapeHTML(facts.slice(-8).map(f =>
-                        '[' + (f.category || '通用') + ']' + f.content).join('；')) + '</div>';
+                    facts.slice(-8).forEach(f => {
+                        longHTML += memoryItemHTML('长期事实 [' + (f.category || '通用') + '] ' + (f.content || ''), '', {
+                            scope: 'longTerm',
+                            category: f.category,
+                            content: f.content,
+                        });
+                    });
                     hasLong = true;
                 }
                 if (expenses.length > 0) {
                     const recentExp = expenses.slice(-5).reverse();
-                    longHTML += '<div class="mem-item"><strong>近期开销</strong>: ' + escapeHTML(recentExp.map(e =>
-                        e.dateStr + ' ' + (e.amount != null && e.amount !== '' ? '¥' + e.amount : '') + ' ' + (e.description || '')).join('；')) +
-                        '</div>';
+                    recentExp.forEach(e => {
+                        longHTML += memoryItemHTML(
+                            '近期开销 ' + (e.dateStr || '') + ' ' + (e.amount != null && e.amount !== '' ? '¥' + e.amount : '') + ' ' + (e.description || ''),
+                            '',
+                            {
+                                scope: 'longTerm',
+                                dateStr: e.dateStr,
+                                amount: e.amount,
+                                description: e.description,
+                            }
+                        );
+                    });
                     hasLong = true;
                 }
                 if (!hasLong) longHTML += '<div class="empty-hint">暂无长期记忆</div>';
@@ -2974,7 +3173,11 @@
                 const validPlans = plans.filter(p => p && p.content);
                 if (validPlans.length > 0) {
                     validPlans.slice(-8).forEach(p => {
-                        volHTML += `<div class="mem-item"><strong>计划</strong> [${escapeHTML(p.type || '其他')}] ${escapeHTML(p.content)}</div>`;
+                        volHTML += memoryItemHTML('计划 [' + (p.type || '其他') + '] ' + p.content, '', {
+                            scope: 'volatile',
+                            type: p.type,
+                            content: p.content,
+                        });
                     });
                     hasVol = true;
                 }
@@ -2984,7 +3187,11 @@
                         const expiry = memorySystem._normalizeExpiry(e.estimatedExpiry);
                         const expiryLabel = expiry ?
                             ' · 至' + new Date(expiry).toLocaleDateString('zh-CN') : '';
-                        volHTML += `<div class="mem-item"><strong>临时事件</strong> ${escapeHTML(e.content)}<div class="mem-meta">${expiryLabel || '无过期时间'}</div></div>`;
+                        volHTML += memoryItemHTML('临时事件 ' + e.content, expiryLabel || '无过期时间', {
+                            scope: 'volatile',
+                            content: e.content,
+                            estimatedExpiry: e.estimatedExpiry,
+                        });
                     });
                     hasVol = true;
                 }
@@ -3356,10 +3563,37 @@
             btnClearAllMem.addEventListener('click', function() {
                 if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
                     memorySystem.clearAll();
+                    clearSelectedMemory();
                     clearChatHistory();
                     updateMemoryPanel();
                     showToast('全部记忆已清空');
                 }
+            });
+
+            function selectMemoryItemElement(item) {
+                if (!item || !item.dataset.memoryTarget) return;
+                try {
+                    const target = JSON.parse(decodeURIComponent(item.dataset.memoryTarget));
+                    const label = decodeURIComponent(item.dataset.memoryLabel || '');
+                    setSelectedMemory(createMemorySelection(label, target));
+                } catch (error) {
+                    console.warn('记忆选择解析失败:', error);
+                    showToast('选中记忆失败，请刷新后重试');
+                }
+            }
+
+            sidebarContent.addEventListener('click', function(e) {
+                const item = e.target.closest('.mem-item[data-memory-target]');
+                if (!item || !sidebarContent.contains(item)) return;
+                selectMemoryItemElement(item);
+            });
+
+            sidebarContent.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                const item = e.target.closest('.mem-item[data-memory-target]');
+                if (!item || !sidebarContent.contains(item)) return;
+                e.preventDefault();
+                selectMemoryItemElement(item);
             });
 
             // ==================== 输入处理 ====================
@@ -3451,6 +3685,7 @@
             // 测试与本地调试入口
             window.renderMessage = renderMessage;
             window.updateMemoryPanel = updateMemoryPanel;
+            window.selectedMemory = selectedMemory;
             window.memorySystem.countLongTermEntries = countLongTermEntries;
             window.memorySystem.countVolatileEntries = countVolatileEntries;
             window.aetherDebug = {
@@ -3458,6 +3693,8 @@
                 compactConversationHistory,
                 applyLocalDeleteIntent,
                 applyLocalSaveIntent,
+                getSelectedMemory: () => selectedMemory,
+                clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
             };
 
