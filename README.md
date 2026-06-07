@@ -21,6 +21,12 @@ python -m http.server 8765 --bind 127.0.0.1
 http://127.0.0.1:8765/aether.html
 ```
 
+也可以直接打开站点根路径，`index.html` 会自动跳转到聊天页：
+
+```text
+http://127.0.0.1:8765/
+```
+
 安卓手机安装：
 
 PWA 的 Service Worker 需要 HTTPS，手机也不能直接使用电脑的 `127.0.0.1`。要在安卓上添加到主屏幕，建议把这些静态文件部署到 HTTPS 站点，例如 GitHub Pages、Cloudflare Pages、Netlify 或 Vercel，然后用安卓 Chrome 打开部署后的 `aether.html`，选择“添加到主屏幕”。
