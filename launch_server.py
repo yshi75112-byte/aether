@@ -1,4 +1,5 @@
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+import ast
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,10 @@ MAX_FILE_BYTES = 600_000
 MAX_QUERY_LENGTH = 120
 MAX_RESULTS = 20
 MAX_READ_LINES = 220
+MAX_SYMBOL_CODE_LINES = 900
+MAX_CONTEXT_CODE_CHARS = 60_000
+MAX_CONTEXT_SYMBOLS = 4
+MAX_CONTEXT_FALLBACK_SNIPPETS = 2
 
 
 class NoCacheHandler(SimpleHTTPRequestHandler):
@@ -71,6 +76,15 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/debug/read":
             self._handle_debug_read(parsed)
+            return
+        if parsed.path == "/api/debug/symbols":
+            self._handle_debug_symbols(parsed)
+            return
+        if parsed.path == "/api/debug/function":
+            self._handle_debug_function(parsed)
+            return
+        if parsed.path == "/api/debug/context":
+            self._handle_debug_context(parsed)
             return
         super().do_GET()
 
@@ -128,6 +142,71 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
         except FileNotFoundError:
             self._send_json(404, {"error": "File not found"})
             return
+        except UnicodeDecodeError:
+            self._send_json(415, {"error": "File is not readable text"})
+            return
+
+        self._send_json(200, payload)
+
+    def _handle_debug_symbols(self, parsed):
+        params = parse_qs(parsed.query)
+        query = (params.get("q", [""])[0] or "").strip()
+        if not query:
+            self._send_json(400, {"error": "Missing query"})
+            return
+        if len(query) > MAX_QUERY_LENGTH:
+            query = query[:MAX_QUERY_LENGTH]
+
+        try:
+            limit = min(MAX_RESULTS, max(1, int(params.get("limit", ["10"])[0])))
+        except ValueError:
+            limit = 10
+
+        results = search_project_symbols(query, limit=limit)
+        self._send_json(200, {"query": query, "root": str(PROJECT_ROOT), "results": results})
+
+    def _handle_debug_function(self, parsed):
+        params = parse_qs(parsed.query)
+        rel_path = (params.get("file", [""])[0] or "").strip()
+        if not rel_path:
+            self._send_json(400, {"error": "Missing file"})
+            return
+
+        try:
+            line = max(1, int(params.get("line", ["1"])[0]))
+        except ValueError:
+            line = 1
+
+        try:
+            payload = read_project_symbol(rel_path, line=line)
+        except ValueError as exc:
+            self._send_json(403, {"error": str(exc)})
+            return
+        except FileNotFoundError:
+            self._send_json(404, {"error": "File not found"})
+            return
+        except UnicodeDecodeError:
+            self._send_json(415, {"error": "File is not readable text"})
+            return
+
+        self._send_json(200, payload)
+
+    def _handle_debug_context(self, parsed):
+        params = parse_qs(parsed.query)
+        query = (params.get("q", [""])[0] or "").strip()
+        if not query:
+            self._send_json(400, {"error": "Missing query"})
+            return
+        if len(query) > MAX_QUERY_LENGTH:
+            query = query[:MAX_QUERY_LENGTH]
+
+        try:
+            limit = min(MAX_CONTEXT_SYMBOLS, max(1, int(params.get("limit", ["4"])[0])))
+        except ValueError:
+            limit = MAX_CONTEXT_SYMBOLS
+
+        try:
+            payload = build_code_context(query, limit=limit)
         except UnicodeDecodeError:
             self._send_json(415, {"error": "File is not readable text"})
             return
@@ -199,6 +278,332 @@ def search_project_code(query, limit=8):
                 return results
 
     return results
+
+
+def extract_symbols_for_file(path):
+    lines = read_text_lines(path)
+    suffix = path.suffix.lower()
+    rel_path = path.relative_to(PROJECT_ROOT).as_posix()
+    if suffix == ".py":
+        return extract_python_symbols(rel_path, lines)
+    return extract_brace_symbols(rel_path, lines)
+
+
+def extract_python_symbols(rel_path, lines):
+    source = "\n".join(lines)
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    symbols = []
+
+    def visit(node, parents):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                start = child.lineno
+                end = getattr(child, "end_lineno", None) or infer_python_end(lines, start)
+                name = child.name
+                kind = "class" if isinstance(child, ast.ClassDef) else "function"
+                signature = lines[start - 1].strip() if 0 <= start - 1 < len(lines) else name
+                symbols.append(make_symbol(rel_path, name, kind, start, end, signature, parents))
+                visit(child, parents + [name])
+            else:
+                visit(child, parents)
+
+    visit(tree, [])
+    return symbols
+
+
+def infer_python_end(lines, start_line):
+    start = max(0, start_line - 1)
+    header = lines[start]
+    indent = len(header) - len(header.lstrip())
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        text = lines[index]
+        if text.strip() and len(text) - len(text.lstrip()) <= indent:
+            end = index
+            break
+    return end
+
+
+def extract_brace_symbols(rel_path, lines):
+    patterns = [
+        ("class", re.compile(r"\bclass\s+([A-Za-z_$][\w$]*)\b")),
+        ("function", re.compile(r"\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")),
+        ("function", re.compile(r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)")),
+        ("function", re.compile(r"^\s*([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?function\b")),
+        ("function", re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{")),
+    ]
+    ignored_names = {"if", "for", "while", "switch", "catch", "function", "return"}
+    symbols = []
+    seen = set()
+
+    for index, text in enumerate(lines):
+        for kind, pattern in patterns:
+            match = pattern.search(text)
+            if not match:
+                continue
+            name = match.group(1)
+            if name in ignored_names:
+                continue
+            end = find_brace_symbol_end(lines, index)
+            key = (name, index + 1, end)
+            if key in seen:
+                continue
+            seen.add(key)
+            signature = text.strip()
+            symbols.append(make_symbol(rel_path, name, kind, index + 1, end, signature, []))
+            break
+
+    return symbols
+
+
+def find_brace_symbol_end(lines, start_index):
+    depth = 0
+    seen_open = False
+    for index in range(start_index, len(lines)):
+        masked = mask_strings_for_brace_count(lines[index])
+        for char in masked:
+            if char == "{":
+                depth += 1
+                seen_open = True
+            elif char == "}":
+                depth -= 1
+        if seen_open and depth <= 0 and index >= start_index:
+            return index + 1
+
+        stripped = lines[index].strip()
+        if not seen_open and index > start_index and stripped.endswith(";"):
+            return index + 1
+
+    return min(len(lines), start_index + MAX_SYMBOL_CODE_LINES)
+
+
+def mask_strings_for_brace_count(text):
+    result = []
+    quote = None
+    escape = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if quote:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            result.append(" ")
+        else:
+            if char == "/" and next_char == "/":
+                result.extend(" " * (len(text) - index))
+                break
+            if char in {"'", '"', "`"}:
+                quote = char
+                result.append(" ")
+            else:
+                result.append(char)
+        index += 1
+    return "".join(result)
+
+
+def make_symbol(rel_path, name, kind, start_line, end_line, signature, parents):
+    parent = ".".join(parents) if parents else ""
+    return {
+        "file": rel_path,
+        "name": name,
+        "kind": kind,
+        "startLine": max(1, start_line),
+        "endLine": max(start_line, end_line),
+        "signature": signature[:260],
+        "parent": parent,
+    }
+
+
+def symbol_body_text(symbol, lines):
+    start = max(0, symbol["startLine"] - 1)
+    end = min(len(lines), symbol["endLine"])
+    return "\n".join(lines[start:end])
+
+
+def score_symbol(symbol, query, body):
+    query_lower = query.lower()
+    tokens = [part for part in re.split(r"\W+", query_lower) if len(part) >= 2]
+    name = symbol["name"].lower()
+    signature = symbol["signature"].lower()
+    file_name = symbol["file"].lower()
+    body_lower = body.lower()
+    score = 0
+
+    if query_lower == name:
+        score += 120
+    elif query_lower in name:
+        score += 90
+    if query_lower in signature:
+        score += 70
+    if query_lower in file_name:
+        score += 35
+    if query_lower in body_lower:
+        score += 30
+
+    for token in tokens:
+        if token == name:
+            score += 60
+        elif token in name:
+            score += 35
+        if token in signature:
+            score += 25
+        if token in file_name:
+            score += 15
+        if token in body_lower:
+            score += 8
+
+    length = symbol["endLine"] - symbol["startLine"] + 1
+    if length <= 8:
+        score -= 3
+    return score
+
+
+def search_project_symbols(query, limit=10):
+    scored = []
+    for path in iter_searchable_files():
+        try:
+            lines = read_text_lines(path)
+        except UnicodeDecodeError:
+            continue
+
+        suffix = path.suffix.lower()
+        rel_path = path.relative_to(PROJECT_ROOT).as_posix()
+        symbols = extract_python_symbols(rel_path, lines) if suffix == ".py" else extract_brace_symbols(rel_path, lines)
+        for symbol in symbols:
+            body = symbol_body_text(symbol, lines)
+            score = score_symbol(symbol, query, body)
+            if score <= 0:
+                continue
+            preview = first_non_empty_line(body, after_first=True)
+            scored.append({**symbol, "score": score, "preview": preview})
+
+    scored.sort(key=lambda item: (-item["score"], item["file"], item["startLine"]))
+    return scored[:limit]
+
+
+def first_non_empty_line(text, after_first=False):
+    lines = text.splitlines()
+    if after_first:
+        lines = lines[1:]
+    for line in lines:
+        stripped = line.strip()
+        if stripped:
+            return stripped[:260]
+    return ""
+
+
+def read_project_symbol(rel_path, line=1):
+    path = safe_project_path(rel_path)
+    if path.name in IGNORED_FILES or path.suffix.lower() not in SEARCH_EXTENSIONS:
+        raise ValueError("File type is not allowed")
+    if path.stat().st_size > MAX_FILE_BYTES:
+        raise ValueError("File is too large")
+
+    lines = read_text_lines(path)
+    if not lines:
+        return {"file": rel_path, "startLine": 1, "endLine": 1, "code": "", "kind": "empty"}
+
+    suffix = path.suffix.lower()
+    rel = path.relative_to(PROJECT_ROOT).as_posix()
+    symbols = extract_python_symbols(rel, lines) if suffix == ".py" else extract_brace_symbols(rel, lines)
+    target = min(max(1, line), len(lines))
+    containing = [
+        symbol for symbol in symbols
+        if symbol["startLine"] <= target <= symbol["endLine"]
+    ]
+
+    if containing:
+        containing.sort(key=lambda item: (
+            item["endLine"] - item["startLine"],
+            0 if item["kind"] == "function" else 1,
+        ))
+        symbol = containing[0]
+        return symbol_payload(symbol, lines)
+
+    start, end = find_code_block(lines, target - 1, suffix, MAX_READ_LINES)
+    code = "\n".join(f"{idx + 1}: {lines[idx]}" for idx in range(start, end))
+    return {
+        "file": rel,
+        "name": "",
+        "kind": "snippet",
+        "startLine": start + 1,
+        "endLine": end,
+        "signature": "",
+        "parent": "",
+        "code": code,
+        "truncated": False,
+    }
+
+
+def symbol_payload(symbol, lines):
+    start = max(0, symbol["startLine"] - 1)
+    end = min(len(lines), symbol["endLine"])
+    truncated = False
+    if end - start > MAX_SYMBOL_CODE_LINES:
+        end = start + MAX_SYMBOL_CODE_LINES
+        truncated = True
+    code = "\n".join(f"{idx + 1}: {lines[idx]}" for idx in range(start, end))
+    return {
+        **symbol,
+        "endLine": end,
+        "code": code,
+        "truncated": truncated,
+    }
+
+
+def build_code_context(query, limit=MAX_CONTEXT_SYMBOLS):
+    symbol_hits = search_project_symbols(query, limit=limit * 3)
+    symbols = []
+    seen = set()
+    total_chars = 0
+
+    for hit in symbol_hits:
+        key = (hit["file"], hit["startLine"], hit["endLine"])
+        if key in seen:
+            continue
+        seen.add(key)
+        detail = read_project_symbol(hit["file"], line=hit["startLine"])
+        projected = total_chars + len(detail.get("code", ""))
+        if projected > MAX_CONTEXT_CODE_CHARS and symbols:
+            break
+        total_chars = projected
+        detail["score"] = hit.get("score", 0)
+        symbols.append(detail)
+        if len(symbols) >= limit:
+            break
+
+    fallback_snippets = []
+    if len(symbols) < limit:
+        for result in search_project_code(query, limit=MAX_CONTEXT_FALLBACK_SNIPPETS * 3):
+            key = (result["file"], result["line"])
+            if key in seen:
+                continue
+            seen.add(key)
+            detail = read_project_code(result["file"], line=result["line"], context=120)
+            projected = total_chars + len(detail.get("code", ""))
+            if projected > MAX_CONTEXT_CODE_CHARS and (symbols or fallback_snippets):
+                break
+            total_chars = projected
+            fallback_snippets.append(detail)
+            if len(fallback_snippets) >= MAX_CONTEXT_FALLBACK_SNIPPETS:
+                break
+
+    return {
+        "query": query,
+        "root": str(PROJECT_ROOT),
+        "symbols": symbols,
+        "fallbackSnippets": fallback_snippets,
+        "totalCodeChars": total_chars,
+    }
 
 
 def read_project_code(rel_path, line=1, context=120):

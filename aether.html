@@ -2,7 +2,12 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#fefef9">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="./assets/aether-icon.svg">
+    <link rel="apple-touch-icon" href="./assets/aether-icon-192.png">
     <title>AI 助手 - 记忆聊天</title>
     <style>
         :root {
@@ -38,6 +43,7 @@
         html {
             font-size: 15px;
             scroll-behavior: smooth;
+            min-height: 100%;
         }
         body {
             font-family: var(--font-sans);
@@ -45,9 +51,12 @@
             color: var(--text);
             line-height: 1.6;
             min-height: 100vh;
+            min-height: 100dvh;
             display: flex;
             justify-content: center;
             align-items: center;
+            padding: env(safe-area-inset-top) env(safe-area-inset-right)
+                env(safe-area-inset-bottom) env(safe-area-inset-left);
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
         }
@@ -58,6 +67,7 @@
             width: 100%;
             max-width: 1100px;
             height: 100vh;
+            height: 100dvh;
             max-height: 900px;
             background: var(--white);
             border-radius: var(--radius-lg);
@@ -69,6 +79,7 @@
         @media (max-width: 768px) {
             .app-container {
                 max-height: 100vh;
+                max-height: 100dvh;
                 border-radius: 0;
                 margin: 0;
                 flex-direction: column;
@@ -860,6 +871,89 @@
             }
         }
 
+        .active-focus-bar {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            padding: 8px 14px;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(255, 255, 255, 0.72);
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+        .focus-chip {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .focus-chip strong {
+            color: var(--text-secondary);
+            font-weight: 600;
+            flex: 0 0 auto;
+        }
+        .focus-chip span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .debug-panel {
+            border-top: 1px solid var(--border-color);
+            padding: 12px;
+            background: rgba(248, 250, 252, 0.86);
+        }
+        .debug-panel h4 {
+            margin: 0 0 8px;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .debug-grid {
+            display: grid;
+            gap: 6px;
+        }
+        .debug-row {
+            display: grid;
+            grid-template-columns: 92px minmax(0, 1fr);
+            gap: 8px;
+            font-size: 0.68rem;
+            line-height: 1.35;
+        }
+        .debug-label {
+            color: var(--text-muted);
+        }
+        .debug-value {
+            color: var(--text-secondary);
+            word-break: break-word;
+        }
+        .debug-value code {
+            font-size: 0.66rem;
+            color: var(--text-primary);
+        }
+        .debug-status-ok {
+            color: #047857;
+        }
+        .debug-status-warn {
+            color: #b45309;
+        }
+        .debug-pre {
+            max-height: 180px;
+            overflow: auto;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            background: #ffffff;
+            color: var(--text-primary);
+            font-size: 0.64rem;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         /* 响应式 */
         @media (max-width: 768px) {
             .app-container {
@@ -904,6 +998,10 @@
             .top-bar {
                 padding: 10px 14px;
             }
+            .active-focus-bar {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
             .ai-avatar-wrapper {
                 width: 34px;
                 height: 34px;
@@ -947,6 +1045,35 @@
                     <h4><span class="dot dot-volatile"></span>波动记忆</h4>
                     <div class="empty-hint">暂无波动记忆</div>
                 </div>
+                <div class="debug-panel" id="debugPanel">
+                    <h4>
+                        <span>Debug 面板</span>
+                        <span id="debugPanelUpdated">未刷新</span>
+                    </h4>
+                    <div class="debug-grid">
+                        <div class="debug-row">
+                            <div class="debug-label">#memory-panel</div>
+                            <div class="debug-value" id="debugMemoryPanelExists">检查中</div>
+                        </div>
+                        <div class="debug-row">
+                            <div class="debug-label">localStorage</div>
+                            <div class="debug-value" id="debugLocalStorageSummary">检查中</div>
+                        </div>
+                        <div class="debug-row">
+                            <div class="debug-label">temporary</div>
+                            <div class="debug-value" id="debugTemporarySummary">检查中</div>
+                        </div>
+                        <div class="debug-row">
+                            <div class="debug-label">最近渲染</div>
+                            <div class="debug-value" id="debugLastRender">未记录</div>
+                        </div>
+                        <div class="debug-row">
+                            <div class="debug-label">错误信息</div>
+                            <div class="debug-value" id="debugLastError">暂无</div>
+                        </div>
+                    </div>
+                    <pre class="debug-pre" id="debugStoragePreview">等待数据...</pre>
+                </div>
             </div>
             <div class="sidebar-footer">
                 <button id="btnCleanExpired">清理过期记忆</button>
@@ -980,6 +1107,11 @@
                 </div>
                 <button class="settings-btn" id="settingsBtn" title="设置">⚙</button>
             </header>
+            <div class="active-focus-bar" id="activeFocusBar">
+                <div class="focus-chip"><strong>任务</strong><span id="activeFocusTask">空闲</span></div>
+                <div class="focus-chip"><strong>阶段</strong><span id="activeFocusPhase">等待输入</span></div>
+                <div class="focus-chip"><strong>禁止跳转</strong><span id="activeFocusBlocked">无</span></div>
+            </div>
 
             <!-- 消息区 -->
             <div class="messages-container" id="messagesContainer">
@@ -1098,6 +1230,16 @@
             const btnImportMem = $('#btnImportMem');
             const btnClearAllMem = $('#btnClearAllMem');
             const importFileInput = $('#importFileInput');
+            const activeFocusTask = $('#activeFocusTask');
+            const activeFocusPhase = $('#activeFocusPhase');
+            const activeFocusBlocked = $('#activeFocusBlocked');
+            const debugPanelUpdated = $('#debugPanelUpdated');
+            const debugMemoryPanelExists = $('#debugMemoryPanelExists');
+            const debugLocalStorageSummary = $('#debugLocalStorageSummary');
+            const debugTemporarySummary = $('#debugTemporarySummary');
+            const debugLastRender = $('#debugLastRender');
+            const debugLastError = $('#debugLastError');
+            const debugStoragePreview = $('#debugStoragePreview');
 
             // ==================== 状态 ====================
             let isProcessing = false;
@@ -1110,6 +1252,16 @@
             const DEBUG_LOGS = false;
             let autoSaveTimer = null; // 自动保存定时器
             let selectedMemory = null;
+            const debugState = {
+                lastRenderAt: null,
+                lastMemoryPanelRenderAt: null,
+                lastError: '',
+            };
+            const activeFocus = {
+                taskName: '空闲',
+                phase: '等待输入',
+                blockedJumps: [],
+            };
 
             // ==================== 存储键 ====================
             const STORAGE_KEYS = {
@@ -1609,6 +1761,112 @@
                     this._saveAll();
                 }
 
+                _contentFromUpdate(updates) {
+                    if (updates == null) return '';
+                    if (typeof updates === 'string' || typeof updates === 'number') return String(updates).trim();
+                    if (typeof updates !== 'object') return '';
+                    const value = updates.content ?? updates.detail ?? updates.description ?? updates.text ?? updates.value ?? updates.name ?? updates.tool;
+                    return value == null ? '' : String(value).trim();
+                }
+
+                _primaryMemoryField(item) {
+                    if (!item || typeof item !== 'object') return '';
+                    return ['content', 'detail', 'description', 'value', 'text', 'name', 'tool'].find(field =>
+                        Object.prototype.hasOwnProperty.call(item, field)
+                    ) || 'content';
+                }
+
+                _applyMemoryItemUpdate(item, updates) {
+                    if (!item || typeof item !== 'object') return false;
+                    const nextText = this._contentFromUpdate(updates);
+                    const before = JSON.stringify(item);
+
+                    if (nextText) {
+                        item[this._primaryMemoryField(item)] = nextText;
+                    }
+                    if (updates && typeof updates === 'object') {
+                        ['category', 'type', 'topic', 'amount', 'dateStr', 'estimatedExpiry', 'expiresAt'].forEach(field => {
+                            if (updates[field] !== undefined) item[field] = updates[field];
+                        });
+                    }
+                    if (item.timestamp !== undefined) item.timestamp = Date.now();
+                    if (item.createdAt !== undefined) item.createdAt = Date.now();
+                    return JSON.stringify(item) !== before;
+                }
+
+                _updateMemoryList(list, target, updates) {
+                    let count = 0;
+                    (list || []).forEach(item => {
+                        if (this._matchesMemoryTarget(item, target) && this._applyMemoryItemUpdate(item, updates)) {
+                            count += 1;
+                        }
+                    });
+                    return count;
+                }
+
+                _updateBasicInfo(target, updates) {
+                    if (!target || typeof target !== 'object') return 0;
+                    const field = target.field || target.key || target.name;
+                    const nextText = this._contentFromUpdate(updates);
+                    if (!field || !Object.prototype.hasOwnProperty.call(this.longTerm.basicInfo, field) || !nextText) {
+                        return 0;
+                    }
+
+                    const current = this.longTerm.basicInfo[field];
+                    if (Array.isArray(current)) {
+                        let count = 0;
+                        this.longTerm.basicInfo[field] = current.map(item => {
+                            const targetValue = target.value ?? target.content ?? target.detail ?? target.tool ?? target;
+                            if (!this._matchesMemoryTarget(item, targetValue)) return item;
+                            count += 1;
+                            if (item && typeof item === 'object') {
+                                return { ...item, [this._primaryMemoryField(item)]: nextText };
+                            }
+                            return nextText;
+                        });
+                        return count;
+                    }
+
+                    if (target.value == null || this._matchesMemoryTarget(current, target.value)) {
+                        this.longTerm.basicInfo[field] = nextText;
+                        return 1;
+                    }
+                    return 0;
+                }
+
+                updateMemory(target, updates) {
+                    if (!target || !updates) return { updated: false, count: 0, reason: 'missing-target-or-updates' };
+                    const targets = Array.isArray(target) ? target : [target];
+                    let count = 0;
+
+                    targets.forEach(item => {
+                        const scope = item && typeof item === 'object'
+                            ? (item.scope || item.memoryType || item.section || item.kind || '')
+                            : '';
+                        const shouldCheck = (...names) => !scope || scope === 'all' || names.includes(scope);
+
+                        if (shouldCheck('shortTerm', 'short', 'all')) {
+                            count += this._updateMemoryList(this.shortTerm.entries, item, updates);
+                        }
+                        if (shouldCheck('longTerm', 'long', 'preference', 'preferences', 'fact', 'facts', 'aiLearning',
+                            'learning', 'expense', 'expenses', 'basicInfo', 'profile', 'all')) {
+                            count += this._updateMemoryList(this.longTerm.preferences, item, updates);
+                            count += this._updateMemoryList(this.longTerm.facts, item, updates);
+                            count += this._updateMemoryList(this.longTerm.aiLearning, item, updates);
+                            count += this._updateMemoryList(this.longTerm.expenses, item, updates);
+                            count += this._updateBasicInfo(item, updates);
+                        }
+                        if (shouldCheck('volatile', 'plan', 'plans', 'temporaryEvent', 'temporaryEvents', 'tempEvent',
+                            'event', 'all')) {
+                            count += this._updateMemoryList(this.volatile.plans, item, updates);
+                            count += this._updateMemoryList(this.volatile.temporaryEvents, item, updates);
+                        }
+                    });
+
+                    if (count > 0) this._saveAll();
+                    return { updated: count > 0, count };
+                }
+
                 /** 用户否定时修改记忆 */
                 handleUserNegation(negatedTopic) {
                     // 在短期记忆中查找并移除相关内容
@@ -1818,6 +2076,27 @@
                         });
                     };
 
+                    if (memData.updateSelectedMemory) {
+                        if (selectedMemory && selectedMemory.target) {
+                            const result = this.updateMemory(selectedMemory.target, memData.updateSelectedMemory);
+                            if (result.updated) {
+                                updateMemoryPanel();
+                                clearSelectedMemory();
+                                showToast('已修改选中的记忆');
+                            }
+                        }
+                    }
+                    if (memData.updateMemory) {
+                        const updates = memData.updateMemory.updates || memData.updateMemory.value || memData.updateMemory.content;
+                        const target = memData.updateMemory.target || memData.updateMemory.where;
+                        const result = this.updateMemory(target, updates);
+                        if (result.updated) {
+                            updateMemoryPanel();
+                            clearSelectedMemory();
+                            showToast('已修改记忆');
+                        }
+                    }
+
                     if (memData.shortTerm) {
                         asArray(memData.shortTerm).forEach(item => {
                             const content = textOf(item);
@@ -2012,6 +2291,150 @@
             window.memorySystem = new MemorySystem();
             const memorySystem = window.memorySystem;
 
+            // ==================== 可视化诊断状态 ====================
+            function formatDebugTime(ts) {
+                if (!ts) return '未记录';
+                return new Date(ts).toLocaleString('zh-CN', {
+                    hour12: false,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                });
+            }
+
+            function safeParseStorage(key) {
+                let raw = '';
+                try {
+                    raw = localStorage.getItem(key) || '';
+                    if (!raw) return { raw: '', value: null, error: '' };
+                    return { raw, value: JSON.parse(raw), error: '' };
+                } catch (error) {
+                    return { raw, value: null, error: error.message || String(error) };
+                }
+            }
+
+            function countArray(value) {
+                return Array.isArray(value) ? value.length : 0;
+            }
+
+            function summarizeMemoryStorage() {
+                const shortStore = safeParseStorage(STORAGE_KEYS.SHORT_TERM);
+                const longStore = safeParseStorage(STORAGE_KEYS.LONG_TERM);
+                const volatileStore = safeParseStorage(STORAGE_KEYS.VOLATILE);
+                const shortEntries = shortStore.value && Array.isArray(shortStore.value.entries)
+                    ? shortStore.value.entries.length
+                    : 0;
+                const longValue = longStore.value || {};
+                const volatileValue = volatileStore.value || {};
+                const longCount =
+                    countArray(longValue.expenses) +
+                    countArray(longValue.preferences) +
+                    countArray(longValue.aiLearning) +
+                    countArray(longValue.facts);
+                const volatileCount = countArray(volatileValue.plans) + countArray(volatileValue.temporaryEvents);
+                return {
+                    shortStore,
+                    longStore,
+                    volatileStore,
+                    summary: `短期 ${shortEntries} / 长期 ${longCount} / 波动 ${volatileCount}`,
+                    preview: {
+                        [STORAGE_KEYS.SHORT_TERM]: {
+                            bytes: shortStore.raw.length,
+                            entries: (shortStore.value && shortStore.value.entries || []).slice(-3),
+                            error: shortStore.error,
+                        },
+                        [STORAGE_KEYS.LONG_TERM]: {
+                            bytes: longStore.raw.length,
+                            value: longStore.value,
+                            error: longStore.error,
+                        },
+                        [STORAGE_KEYS.VOLATILE]: {
+                            bytes: volatileStore.raw.length,
+                            value: volatileStore.value,
+                            error: volatileStore.error,
+                        },
+                    },
+                };
+            }
+
+            function refreshActiveFocusDisplay() {
+                if (activeFocusTask) activeFocusTask.textContent = activeFocus.taskName || '空闲';
+                if (activeFocusPhase) activeFocusPhase.textContent = activeFocus.phase || '等待输入';
+                if (activeFocusBlocked) {
+                    activeFocusBlocked.textContent = activeFocus.blockedJumps && activeFocus.blockedJumps.length
+                        ? activeFocus.blockedJumps.join('、')
+                        : '无';
+                }
+            }
+
+            function setActiveFocus(taskName, phase, blockedJumps = []) {
+                activeFocus.taskName = taskName || '空闲';
+                activeFocus.phase = phase || '等待输入';
+                activeFocus.blockedJumps = Array.isArray(blockedJumps) ? blockedJumps : [String(blockedJumps)];
+                refreshActiveFocusDisplay();
+                refreshDebugPanel();
+            }
+
+            function recordDebugError(error, label = '错误') {
+                const message = error && error.message ? error.message : String(error || '');
+                debugState.lastError = `${label}: ${message}`;
+                refreshDebugPanel();
+            }
+
+            function refreshDebugPanel() {
+                const storage = summarizeMemoryStorage();
+                const volatileFromStorage = storage.volatileStore.value || {};
+                const volatileFromRuntime = memorySystem.volatile || {};
+                const directTempEvent = volatileFromStorage.temporaryEvent || volatileFromRuntime.temporaryEvent || null;
+                const directTempEvents = volatileFromStorage.temporaryEvents || volatileFromRuntime.temporaryEvents || [];
+                const runtimeTempEvents = volatileFromRuntime.temporaryEvents || [];
+                const memoryPanelExists = !!document.querySelector('#memory-panel');
+                const now = Date.now();
+
+                if (debugPanelUpdated) debugPanelUpdated.textContent = formatDebugTime(now);
+                if (debugMemoryPanelExists) {
+                    debugMemoryPanelExists.textContent = memoryPanelExists
+                        ? '存在'
+                        : '不存在（当前页面使用 #sidebar / #memVolatile）';
+                    debugMemoryPanelExists.className = memoryPanelExists
+                        ? 'debug-value debug-status-ok'
+                        : 'debug-value debug-status-warn';
+                }
+                if (debugLocalStorageSummary) debugLocalStorageSummary.textContent = storage.summary;
+                if (debugTemporarySummary) {
+                    debugTemporarySummary.textContent =
+                        `temporaryEvent ${directTempEvent ? '有' : '无'} / ` +
+                        `temporaryEvents ${countArray(directTempEvents)} / ` +
+                        `volatile.temporaryEvents ${countArray(runtimeTempEvents)}`;
+                }
+                if (debugLastRender) {
+                    debugLastRender.textContent =
+                        `消息 ${formatDebugTime(debugState.lastRenderAt)}；记忆面板 ${formatDebugTime(debugState.lastMemoryPanelRenderAt)}`;
+                }
+                if (debugLastError) debugLastError.textContent = debugState.lastError || '暂无';
+                if (debugStoragePreview) {
+                    debugStoragePreview.textContent = JSON.stringify({
+                        activeFocus,
+                        localStorage: storage.preview,
+                        temporaryEvent: directTempEvent,
+                        temporaryEvents: Array.isArray(directTempEvents) ? directTempEvents.slice(-5) : directTempEvents,
+                        volatile: {
+                            temporaryEvents: Array.isArray(runtimeTempEvents) ? runtimeTempEvents.slice(-5) : runtimeTempEvents,
+                        },
+                    }, null, 2);
+                }
+            }
+
+            window.addEventListener('error', (event) => {
+                recordDebugError(event.error || event.message, 'window.error');
+            });
+            window.addEventListener('unhandledrejection', (event) => {
+                recordDebugError(event.reason, 'unhandledrejection');
+            });
+
             // ==================== 设置管理 ====================
             function loadSettings() {
                 const defaults = {
@@ -2139,6 +2562,8 @@
                 `;
                 messagesContainer.appendChild(msgDiv);
                 scrollToBottom();
+                debugState.lastRenderAt = Date.now();
+                refreshDebugPanel();
                 return msgDiv;
             }
 
@@ -2190,9 +2615,12 @@
             }
 
             // ==================== 解析记忆更新标记 ====================
+            const MEMORY_UPDATE_REGEX = /<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i;
+            const MEMORY_UPDATE_GLOBAL_REGEX = /<!--\s*MEMORY_UPDATE\s*:[\s\S]*?\s*-->/gi;
+
             function extractMemoryUpdatePayload(content) {
                 if (!content) return null;
-                const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
+                const match = content.match(MEMORY_UPDATE_REGEX);
                 if (!match) return null;
                 try {
                     return JSON.parse(match[1].trim());
@@ -2204,7 +2632,38 @@
 
             function stripMemoryUpdateMarkers(content) {
                 if (!content) return '';
-                return content.replace(/<!--\s*MEMORY_UPDATE\s*:[\s\S]*?\s*-->/gi, '').trim();
+                return content.replace(MEMORY_UPDATE_GLOBAL_REGEX, '').trim();
+            }
+
+            function ensureMemoryUpdateMarker(response) {
+                const text = String(response || '').trim();
+                if (!text) return '<!--MEMORY_UPDATE:{}-->';
+                return MEMORY_UPDATE_REGEX.test(text) ? text : text + '<!--MEMORY_UPDATE:{}-->';
+            }
+
+            function parseAIResponseMemoryUpdate(response, shouldApply = true) {
+                const responseWithMarker = ensureMemoryUpdateMarker(response);
+                const match = responseWithMarker.match(MEMORY_UPDATE_REGEX);
+                let memoryData = {};
+
+                if (match) {
+                    try {
+                        memoryData = JSON.parse(match[1].trim());
+                        if (shouldApply) {
+                            memorySystem._applyMemoryData(memoryData);
+                            window.dispatchEvent(new CustomEvent('aether-memory-updated'));
+                        }
+                    } catch (e) {
+                        console.error('记忆更新标记解析失败:', e);
+                        recordDebugError(e, '记忆更新标记解析失败');
+                    }
+                }
+
+                return {
+                    raw: responseWithMarker,
+                    clean: stripMemoryUpdateMarkers(responseWithMarker),
+                    memoryData,
+                };
             }
 
             function messageSnippetForSummary(msg) {
@@ -2327,6 +2786,8 @@
                     '当前选中的记忆：',
                     '- 显示文本：' + selectedMemory.label,
                     '- 删除目标：' + JSON.stringify(selectedMemory.target),
+                    '- 修改目标：' + JSON.stringify(selectedMemory.target),
+                    '- 若用户要求修改“这条/这个/选中的记忆”，可使用 {"updateSelectedMemory":{"content":"新内容"}}。',
                 ].join('\n');
             }
 
@@ -2391,7 +2852,19 @@
                 return false;
             }
 
+            function hasLocalDeleteTarget(text) {
+                const userText = String(text || '').trim();
+                if (!/(删除|删掉|移除)/.test(userText)) return true;
+
+                return selectedMemory !== null ||
+                    /(删除|删掉|移除)\s{0,3}.{2,}/.test(userText) ||
+                    /^(是|确认|确定)$/.test(userText);
+            }
+
             function applyLocalDeleteIntent(userText) {
+                if (!hasLocalDeleteTarget(userText)) {
+                    return { handled: false, deleted: false, reason: 'missing-delete-target' };
+                }
                 if (!hasExplicitLocalDeleteIntent(userText)) {
                     return { handled: false, deleted: false, reason: 'no-delete-intent' };
                 }
@@ -2507,6 +2980,53 @@
                 return { handled: true, saved: true, target, type };
             }
 
+            function looksLikeSelectedMemoryUpdateRequest(text) {
+                const userText = String(text || '').trim();
+                return /(这条|这个|选中|当前)[\s\S]{0,12}(记忆|内容|条目)?[\s\S]{0,12}(改成|改为|修改为|更新为|记成|改写为|修改|更新)/.test(userText) ||
+                    /^(改成|改为|修改为|更新为|记成|改写为)(\s|[:：]|$)/.test(userText);
+            }
+
+            function extractSelectedMemoryUpdateContent(text) {
+                const userText = String(text || '').trim();
+                const match = userText.match(/(?:改成|改为|修改为|更新为|记成|改写为)\s*[:：]?\s*([\s\S]{2,})/);
+                if (!match) return '';
+                return match[1]
+                    .replace(/^["“”'‘’「」『』\s]+|["“”'‘’「」『』\s]+$/g, '')
+                    .trim();
+            }
+
+            function applyLocalUpdateIntent(userText) {
+                if (!looksLikeSelectedMemoryUpdateRequest(userText)) {
+                    return { handled: false, updated: false, reason: 'no-update-intent' };
+                }
+                if (!selectedMemory || !selectedMemory.target) {
+                    const message = '请先在左侧记忆面板选中要修改的记忆。';
+                    showToast(message);
+                    return { handled: true, updated: false, reason: 'missing-selected-memory', message };
+                }
+
+                const content = extractSelectedMemoryUpdateContent(userText);
+                if (!content) {
+                    const message = '要把这条记忆改成什么？';
+                    showToast(message);
+                    return { handled: true, updated: false, reason: 'missing-update-content', message };
+                }
+
+                const result = memorySystem.updateMemory(selectedMemory.target, { content });
+                if (result.updated) {
+                    const oldLabel = selectedMemory.label;
+                    updateMemoryPanel();
+                    clearSelectedMemory();
+                    const message = '已修改记忆：' + content;
+                    showToast(message);
+                    return { handled: true, updated: true, before: oldLabel, after: content, message };
+                }
+
+                const message = '没有找到可修改的选中记忆。';
+                showToast(message);
+                return { handled: true, updated: false, reason: 'update-failed', message };
+            }
+
             // ==================== 本地代码检索 ====================
             const DEBUG_FALLBACK_QUERIES = [
                 'debugCodeSearch',
@@ -2518,7 +3038,16 @@
             ];
 
             function looksLikeCodeDebugRequest(text) {
-                return /代码|源码|函数|方法|类|接口|文件|实现|定义|调用|读取|访问|权限|报错|错误|bug|debug|调试|检索|搜索|查找|查看|查到|定位|修复|功能|read code|search code|where is/i.test(text);
+                const raw = String(text || '').trim();
+                const compact = raw.replace(/\s+/g, '');
+                if (!compact) return false;
+
+                const hasConcreteCodeTarget =
+                    /[A-Za-z_$][\w$.-]{2,}/.test(raw) ||
+                    /(?:\/api\/|\\|\.html\b|\.js\b|\.py\b|\.css\b|#[A-Za-z][\w-]*)/i.test(raw);
+                if (compact.length <= 4 && !hasConcreteCodeTarget) return false;
+
+                return /代码|源码|函数|方法|类|接口|文件|实现|定义|调用|读取|访问|权限|报错|错误|bug|debug|调试|检索|搜索|查找|查看|查到|定位|修复|功能|read code|search code|where is/i.test(raw);
             }
 
             function uniqueList(items) {
@@ -2568,21 +3097,23 @@
                     ...DEBUG_FALLBACK_QUERIES,
                 ]);
 
-                let searchPayload = null;
+                let contextPayload = null;
                 let usedQuery = '';
                 const attemptedQueries = [];
                 for (const query of queries) {
                     attemptedQueries.push(query);
-                    const url = `/api/debug/search?q=${encodeURIComponent(query)}&limit=6`;
+                    const url = `/api/debug/context?q=${encodeURIComponent(query)}&limit=4`;
                     const payload = await fetchDebugJson(url);
-                    if (payload.results && payload.results.length) {
-                        searchPayload = payload;
+                    const hasSymbols = payload.symbols && payload.symbols.length;
+                    const hasFallback = payload.fallbackSnippets && payload.fallbackSnippets.length;
+                    if (hasSymbols || hasFallback) {
+                        contextPayload = payload;
                         usedQuery = query;
                         break;
                     }
                 }
 
-                if (!searchPayload) {
+                if (!contextPayload) {
                     return [
                         "## 本地代码检索上下文",
                         "用户问题触发了本地代码检索，但没有找到匹配结果。",
@@ -2593,22 +3124,32 @@
 
                 const snippets = [];
                 const seen = new Set();
-                for (const result of searchPayload.results.slice(0, 3)) {
-                    const key = `${result.file}:${result.line}`;
+                for (const symbol of (contextPayload.symbols || []).slice(0, 4)) {
+                    const key = `${symbol.file}:${symbol.startLine}:${symbol.endLine}`;
                     if (seen.has(key)) continue;
                     seen.add(key);
+                    const namePart = symbol.name ? ` ${symbol.name}` : '';
+                    const parentPart = symbol.parent ? ` parent=${symbol.parent}` : '';
+                    const truncatedPart = symbol.truncated ? "\n注意：该函数超出单次上下文上限，以下为函数开头部分。" : '';
+                    snippets.push(`### ${symbol.file}:${symbol.startLine}-${symbol.endLine} ${symbol.kind || 'symbol'}${namePart}${parentPart}${truncatedPart}\n\`\`\`\n${symbol.code}\n\`\`\``);
+                }
 
-                    const readUrl = `/api/debug/read?file=${encodeURIComponent(result.file)}&line=${result.line}&context=140`;
-                    const detail = await fetchDebugJson(readUrl);
-                    snippets.push(`### ${detail.file}:${detail.startLine}-${detail.endLine}\n\`\`\`\n${detail.code}\n\`\`\``);
+                for (const detail of (contextPayload.fallbackSnippets || []).slice(0, 2)) {
+                    const key = `${detail.file}:${detail.startLine}:${detail.endLine}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    snippets.push(`### ${detail.file}:${detail.startLine}-${detail.endLine} snippet\n\`\`\`\n${detail.code}\n\`\`\``);
                 }
 
                 if (!snippets.length) return '';
 
+                const symbolCount = (contextPayload.symbols || []).length;
+                const fallbackCount = (contextPayload.fallbackSnippets || []).length;
                 return [
                     "## 本地代码检索上下文",
                     `用户问题触发了本地代码检索。搜索词：${usedQuery}`,
-                    "以下代码片段只来自助手所在文件夹。回答时优先基于这些片段；如果片段不足，请明确说明还需要搜索什么。",
+                    `已返回完整相关函数/类 ${symbolCount} 个，兜底片段 ${fallbackCount} 个。`,
+                    "以下代码只来自助手所在文件夹。回答时优先基于完整函数/类；如果上下文仍不足，请明确说明还需要搜索什么。",
                     "你已经具备读取助手所在文件夹内代码片段的能力；不要回答“没有文件系统权限”。",
                     "",
                     snippets.join("\n\n"),
@@ -2734,10 +3275,10 @@
                     selectedMemoryContextText(),
                     "",
                     "## 本地代码检索",
-                    "- 你可以通过系统提供的“本地代码检索上下文”了解助手所在文件夹内的代码片段。",
+                    "- 你可以通过系统提供的“本地代码检索上下文”了解助手所在文件夹内的完整相关函数、类和兜底代码片段。",
                     "- 当系统额外提供“本地代码检索上下文”时，说明用户正在问代码或 debug 问题。",
                     "- 如果上下文显示已检索但无结果，不要说自己没有文件系统权限；应说明没有命中，并请用户给出更具体的函数名、文件名或错误关键词。",
-                    "- 回答必须优先引用上下文中的文件、函数和行号，不要编造未检索到的代码。",
+                    "- 回答必须优先引用上下文中的文件、函数/类和行号，不要编造未检索到的代码。",
                     "- 如果上下文不足，直接告诉用户需要继续检索的关键词或文件。",
                     "",
                     "## 记忆面板调试",
@@ -2772,6 +3313,10 @@
                     "用户说：取消明天去健身房这个计划",
                     "你的回复：已取消。<!--MEMORY_UPDATE:{\"removePlan\":\"明天去健身房\"}-->",
                     "",
+                    "示例7（修改选中的记忆）：",
+                    "用户说：把这条记忆改成：我喜欢喝热美式",
+                    "你的回复：已修改。<!--MEMORY_UPDATE:{\"updateSelectedMemory\":{\"content\":\"我喜欢喝热美式\"}}-->",
+                    "",
                     "## 记忆类型详解",
                     "1. shortTerm - 短期记忆（7天）：对话要点",
                     "2. basicInfo - 基本信息：年龄、职业、宠物等",
@@ -2791,6 +3336,17 @@
                     "- 删除临时事件：{\"removeTemporaryEvent\":\"事件内容\"}",
                     "- 模糊删除任意记忆：{\"removeMemory\":{\"scope\":\"all\",\"content\":\"要删除的内容\"}}",
                     "- scope 可选：shortTerm、longTerm、volatile、preference、fact、aiLearning、expense、basicInfo、plan、temporaryEvent、all",
+                    "",
+                    "## 修改记忆字段",
+                    "- 修改当前选中的记忆：{\"updateSelectedMemory\":{\"content\":\"新内容\"}}",
+                    "- 修改指定记忆：{\"updateMemory\":{\"target\":{\"scope\":\"longTerm\",\"content\":\"旧内容\"},\"updates\":{\"content\":\"新内容\"}}}",
+                    "- 只有用户明确要求修改/改成/更新选中的记忆时才使用修改字段；普通聊天不要修改记忆。",
+                    "",
+                    "⚠️ 记忆更新规则（必须遵守）：",
+                    "- 每次回复末尾必须添加隐藏记忆更新标记",
+                    "- 格式：<!--MEMORY_UPDATE:{\"shortTerm\":[{\"content\":\"要记住的对话要点\"}]}-->",
+                    "- 无新记忆也加空标记：<!--MEMORY_UPDATE:{}-->",
+                    "- JSON必须完整有效，不能有语法错误",
                     "",
                     "## 回复风格",
                     "- 简约，讲重点，不啰嗦",
@@ -2876,18 +3432,27 @@
                 sendBtn.disabled = true;
                 userInput.disabled = true;
                 setThinkingState(true);
+                const focusTaskName = userText.length > 36 ? userText.slice(0, 36) + '...' : userText;
+                setActiveFocus(focusTaskName, '接收用户输入', ['新任务', '重复发送']);
 
                 // 渲染用户消息
                 const userTimestamp = Date.now();
                 renderMessage('user', userText, userTimestamp);
                 const userMsgForHistory = { role: 'user', content: userText, timestamp: userTimestamp };
                 conversationHistory.push(userMsgForHistory);
+                setActiveFocus(focusTaskName, '本地记忆意图识别', ['跳过本地处理', '重复发送']);
 
-                const localDeleteResult = applyLocalDeleteIntent(userText);
-                const localSaveResult = localDeleteResult.handled
+                const codeDebugRequest = looksLikeCodeDebugRequest(userText);
+                const localUpdateResult = codeDebugRequest
+                    ? { handled: false, updated: false, reason: 'code-debug-request' }
+                    : applyLocalUpdateIntent(userText);
+                const localDeleteResult = codeDebugRequest || localUpdateResult.handled
+                    ? { handled: false, deleted: false, reason: 'code-debug-request' }
+                    : applyLocalDeleteIntent(userText);
+                const localSaveResult = codeDebugRequest || localUpdateResult.handled || localDeleteResult.handled
                     ? { handled: false }
                     : applyLocalSaveIntent(userText);
-                if (!localDeleteResult.handled && !localSaveResult.handled) {
+                if (!localUpdateResult.handled && !localDeleteResult.handled && !localSaveResult.handled) {
                     // 也在短期记忆中记录
                     memorySystem.addShortTerm(userText, 'user_message');
                 }
@@ -2915,6 +3480,29 @@
                     setThinkingState(false);
                     userInput.focus();
                     updateMemoryPanel();
+                    setActiveFocus('空闲', '等待输入', []);
+                    return;
+                }
+
+                if (localUpdateResult.handled) {
+                    const localResponse = localUpdateResult.message || (localUpdateResult.updated
+                        ? '已修改这条记忆。'
+                        : '没有找到可修改的记忆。');
+                    const aiTimestamp = Date.now();
+                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, { applyMemoryUpdate: false });
+                    conversationHistory.push({
+                        role: 'assistant',
+                        content: localResponse,
+                        timestamp: aiTimestamp,
+                    });
+                    persistChatHistory();
+                    isProcessing = false;
+                    sendBtn.disabled = false;
+                    userInput.disabled = false;
+                    setThinkingState(false);
+                    userInput.focus();
+                    updateMemoryPanel();
+                    setActiveFocus('空闲', '等待输入', []);
                     return;
                 }
 
@@ -2926,16 +3514,19 @@
                     userInput.disabled = false;
                     setThinkingState(false);
                     userInput.focus();
+                    setActiveFocus('配置 API Key', '等待用户保存设置', ['发送消息']);
                     return;
                 }
 
                 // 构建API消息
+                setActiveFocus(focusTaskName, '构建上下文', ['跳过记忆快照', '重复发送']);
                 const systemPrompt = buildSystemPrompt();
                 const memoryPanelContext = buildMemoryPanelDebugContext(userText);
                 let codeDebugContext = '';
                 try {
                     codeDebugContext = await buildCodeDebugContext(userText, settings);
                 } catch (debugError) {
+                    recordDebugError(debugError, '本地代码检索失败');
                     debugLog('本地代码检索失败:', debugError);
                     showToast('本地代码检索失败，将继续普通对话');
                 }
@@ -2959,9 +3550,11 @@
                 `;
                 messagesContainer.appendChild(aiMsgPlaceholder);
                 scrollToBottom();
+                setActiveFocus(focusTaskName, '等待 API 返回', ['切换任务', '重复发送', '改写上下文']);
 
                 try {
                     const aiResponse = await callDeepSeekAPI(apiMessages);
+                    setActiveFocus(focusTaskName, '渲染 AI 回复', ['重复发送']);
 
                     // 移除占位
                     if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
@@ -2970,14 +3563,10 @@
                     const aiTimestamp = Date.now();
                     debugLog('🔍 AI 返回内容包含 MEMORY_UPDATE:', aiResponse.includes('<!--MEMORY_UPDATE'));
                     debugLog('🔍 AI 返回内容长度:', aiResponse.length);
-                    
-                    // 手动追加记忆更新标记
-                    const aiResponseForRender = aiResponse + ' ';
-                    renderMessage('ai', aiResponseForRender, aiTimestamp, { applyMemoryUpdate: true });
-                    if (typeof memorySystem.parseMemoryUpdate === 'function') {
-                        memorySystem.parseMemoryUpdate(aiResponseForRender);
-                    }
-                    const cleanAiResponse = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(aiResponseForRender));
+
+                    const parsedAiResponse = parseAIResponseMemoryUpdate(aiResponse, !codeDebugRequest);
+                    renderMessage('ai', parsedAiResponse.clean, aiTimestamp, { applyMemoryUpdate: false });
+                    const cleanAiResponse = stripVisibleTimestampPrefixes(parsedAiResponse.clean);
                     const aiMsgForHistory = { 
                         role: 'assistant', 
                         content: cleanAiResponse,
@@ -2987,7 +3576,7 @@
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
                     const cleanResponse = cleanAiResponse;
-                    const memPayload = extractMemoryUpdatePayload(aiResponseForRender);
+                    const memPayload = parsedAiResponse.memoryData;
                     const hasShortTermUpdate = memPayload && memPayload.shortTerm &&
                         (Array.isArray(memPayload.shortTerm) ? memPayload.shortTerm.length > 0 : !!memPayload.shortTerm);
                     if (cleanResponse.length > 10 && !hasShortTermUpdate) {
@@ -2999,6 +3588,8 @@
                 } catch (error) {
                     if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
                     const errorMsg = error.message || '未知错误';
+                    recordDebugError(error, 'API调用失败');
+                    setActiveFocus(focusTaskName, '发生错误', ['重复发送']);
                     renderMessage('ai', '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。', null, { applyMemoryUpdate: true });
                     console.error('API调用失败:', error);
                 } finally {
@@ -3008,6 +3599,7 @@
                     setThinkingState(false);
                     userInput.focus();
                     updateMemoryPanel();
+                    setActiveFocus('空闲', '等待输入', []);
                 }
             }
 
@@ -3224,6 +3816,8 @@
                 }
                 if (!hasVol) volHTML += '<div class="empty-hint">暂无波动记忆</div>';
                 memVolatile.innerHTML = volHTML;
+                debugState.lastMemoryPanelRenderAt = Date.now();
+                refreshDebugPanel();
             }
 
             function escapeHTML(str) {
@@ -3642,7 +4236,9 @@
             // ==================== 初始化 ====================
             function init() {
                 populateSettingsForm();
+                refreshActiveFocusDisplay();
                 updateMemoryPanel();
+                refreshDebugPanel();
                 userInput.focus();
                 warnAboutUnsafeOrigin();
 
@@ -3692,6 +4288,15 @@
             // 页面卸载前保存
             window.addEventListener('beforeunload', persistChatHistory);
 
+            // ==================== PWA ====================
+            if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
+                window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('./service-worker.js').catch(error => {
+                        debugLog('PWA Service Worker 注册失败:', error);
+                    });
+                });
+            }
+
             // ==================== 移动端手势 ====================
             let touchStartX = 0;
             document.addEventListener('touchstart', function(e) {
@@ -3723,6 +4328,8 @@
                 getSelectedMemory: () => selectedMemory,
                 clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
+                getActiveFocus: () => activeFocus,
+                refreshDebugPanel,
             };
 
             // 启动
