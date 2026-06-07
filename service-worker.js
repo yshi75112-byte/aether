@@ -1,6 +1,7 @@
-const CACHE_NAME = 'aether-pwa-v1';
+const CACHE_NAME = 'aether-pwa-v2';
 const APP_SHELL = [
   './',
+  './index.html',
   './aether.html',
   './manifest.webmanifest',
   './assets/aether-icon.svg',
