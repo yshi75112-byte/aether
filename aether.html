@@ -210,6 +210,49 @@
         .dot-volatile {
             background: #d4a76a;
         }
+        .dot-topic {
+            background: #6f8f84;
+        }
+        .topic-status-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            margin: 2px 0 8px;
+        }
+        .topic-status-main {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
+        }
+        .topic-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #d9d5ca;
+            border-top-color: #6f8f84;
+            border-radius: 50%;
+            display: none;
+            flex-shrink: 0;
+            animation: topic-spin 0.8s linear infinite;
+        }
+        .topic-spinner.busy {
+            display: inline-block;
+        }
+        .topic-chain {
+            margin-top: 3px;
+            color: var(--text-secondary);
+        }
+        .topic-node-count {
+            color: var(--text-muted);
+        }
+        @keyframes topic-spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
         .memory-section .mem-item {
             font-size: 0.75rem;
             color: var(--text-secondary);
@@ -1035,6 +1078,18 @@
                     <h4><span class="dot dot-short"></span>短期记忆（7天）</h4>
                     <div class="empty-hint">暂无短期记忆</div>
                 </div>
+                <!-- 话题记忆检查 -->
+                <div class="memory-section" id="topicMemoryPanel">
+                    <h4><span class="dot dot-topic"></span>话题检查</h4>
+                    <div class="topic-status-line">
+                        <span class="topic-status-main">
+                            <span class="topic-spinner"></span>
+                            <span>等待新消息</span>
+                        </span>
+                        <span>0 个话题</span>
+                    </div>
+                    <div class="empty-hint">暂无话题归类</div>
+                </div>
                 <!-- 长期记忆 -->
                 <div class="memory-section" id="memLong">
                     <h4><span class="dot dot-long"></span>长期记忆</h4>
@@ -1181,6 +1236,15 @@
             <p style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">
                 仅读取助手所在文件夹，用于回答代码和 debug 问题
             </p>
+            <label for="webSearchModeSelect" style="margin-top:12px;">联网模式</label>
+            <select id="webSearchModeSelect">
+                <option value="auto">自动判断</option>
+                <option value="manual">手动触发（/web 或 #联网）</option>
+                <option value="off">关闭</option>
+            </select>
+            <p style="font-size:0.68rem;color:var(--text-muted);margin-top:4px;">
+                需要运行本地服务；搜索 API Key 放在后端环境变量中
+            </p>
             <div class="btn-row">
                 <button id="cancelSettings">取消</button>
                 <button class="primary" id="saveSettings">保存设置</button>
@@ -1194,6 +1258,7 @@
     <!-- 隐藏的文件输入（用于导入） -->
     <input type="file" id="importFileInput" accept=".json" style="display:none;">
 
+    <script src="./topic-memory/topic-memory-manager.js"></script>
     <script>
         (function() {
             // ==================== DOM引用 ====================
@@ -1223,6 +1288,7 @@
             const autoSaveToggle = $('#autoSaveToggle');
             const autoSaveInterval = $('#autoSaveInterval');
             const debugCodeToggle = $('#debugCodeToggle');
+            const webSearchModeSelect = $('#webSearchModeSelect');
             const inputHint = $('#inputHint');
             const toastContainer = $('#toastContainer');
             const btnCleanExpired = $('#btnCleanExpired');
@@ -1245,6 +1311,7 @@
             let isProcessing = false;
             let conversationHistory = []; // 最近对话消息，旧消息会压缩到 conversationSummary
             let conversationSummary = '';
+            let messageSequence = 0;
             const MAX_SHORT_TERM_ENTRIES = 50; // 短期记忆最多保留50条
             const MAX_STORED_CHAT_MESSAGES = 120;
             const MAX_API_HISTORY_MESSAGES = 24;
@@ -1255,6 +1322,8 @@
             const debugState = {
                 lastRenderAt: null,
                 lastMemoryPanelRenderAt: null,
+                lastMemorySaveAt: null,
+                lastMemorySaveSnapshot: null,
                 lastError: '',
             };
             const activeFocus = {
@@ -1271,6 +1340,7 @@
                 SETTINGS: 'app_settings',
                 CHAT_HISTORY: 'chat_history_cache',
                 SESSION_API_KEY: 'session_api_key',
+                TOPIC_MEMORY: 'mem_topic_memory',
             };
 
             function debugLog(...args) {
@@ -1309,6 +1379,7 @@
                     if (!Array.isArray(this.volatile.plans)) this.volatile.plans = [];
                     if (!Array.isArray(this.volatile.temporaryEvents)) this.volatile.temporaryEvents = [];
                     this._cleanExpired();
+                    this._saveAll();
                     debugLog('🧠 记忆系统初始化完成:', {
                         shortTerm: this.shortTerm.entries.length,
                         longTerm: {
@@ -1336,6 +1407,7 @@
                         localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                         localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                         localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                        this._recordSaveSnapshot();
                     } catch (e) {
                         console.warn('记忆存储空间不足', e);
                         this._cleanExpired();
@@ -1343,10 +1415,34 @@
                             localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                             localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                             localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                            this._recordSaveSnapshot();
                         } catch (e2) {
                             console.error('记忆存储失败', e2);
                         }
                     }
+                }
+
+                _recordSaveSnapshot() {
+                    const snapshot = this.getDebugSnapshot();
+                    this.lastSavedAt = Date.now();
+                    this.lastSaveSnapshot = snapshot;
+                    debugState.lastMemorySaveAt = this.lastSavedAt;
+                    debugState.lastMemorySaveSnapshot = snapshot;
+                    debugLog('💾 记忆已保存:', snapshot);
+                }
+
+                getDebugSnapshot() {
+                    const basicInfo = this.longTerm && this.longTerm.basicInfo ? this.longTerm.basicInfo : {};
+                    return {
+                        shortTerm: (this.shortTerm.entries || []).length,
+                        longTerm: countLongTermEntriesFromValue(this.longTerm),
+                        volatile: countVolatileEntriesFromValue(this.volatile),
+                        basicInfo: countDefinedBasicInfo(basicInfo),
+                        temporaryEvents: countArray((this.volatile || {}).temporaryEvents),
+                        activeTemporaryEvents: ((this.volatile || {}).temporaryEvents || []).filter(e =>
+                            e && e.content && this._isTempEventActive(e)
+                        ).length,
+                    };
                 }
 
                 /** 清理过期记忆 */
@@ -1551,7 +1647,7 @@
                 }
 
                 /** 兼容解析 AI 可见回复中的自然语言记忆确认 */
-                parseMemoryUpdate(content) {
+                parseVisibleMemoryUpdate(content) {
                     if (!content || typeof content !== 'string') return false;
                     const text = content.trim();
                     if (!/已存入波动记忆|临时事件/.test(text)) return false;
@@ -2043,7 +2139,7 @@
                 parseMemoryUpdate(content) {
                     if (!content) return;
                     const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
-                    if (!match) return;
+                    if (!match) return this.parseVisibleMemoryUpdate(content);
                     try {
                         const memData = JSON.parse(match[1].trim());
                         debugLog('📌 检测到记忆更新标记');
@@ -2290,6 +2386,61 @@
             // 初始化记忆系统
             window.memorySystem = new MemorySystem();
             const memorySystem = window.memorySystem;
+            const topicMemoryManager = window.TopicMemoryManager ? new window.TopicMemoryManager({
+                storageKey: STORAGE_KEYS.TOPIC_MEMORY,
+                callApi: callDeepSeekAPI,
+                hasApiKey: () => !!loadSettings().apiKey,
+                isBusy: () => isProcessing,
+                onChange: () => setTimeout(renderTopicMemoryPanel, 0),
+            }) : null;
+
+            function createMessageId(role, timestamp = Date.now()) {
+                messageSequence += 1;
+                const safeRole = role === 'assistant' || role === 'ai' ? 'assistant' : 'user';
+                return 'msg_' + String(timestamp).replace(/\D/g, '') + '_' + safeRole + '_' + messageSequence;
+            }
+
+            function ensureConversationMessageId(msg) {
+                if (!msg || typeof msg !== 'object') return msg;
+                if (!msg.id) {
+                    msg.id = createMessageId(msg.role, msg.timestamp || Date.now());
+                }
+                return msg;
+            }
+
+            function normalizeConversationHistoryIds() {
+                conversationHistory = (conversationHistory || []).map(ensureConversationMessageId).filter(Boolean);
+                return conversationHistory;
+            }
+
+            function enqueueTopicMemory(options = {}) {
+                if (!topicMemoryManager) return;
+                normalizeConversationHistoryIds();
+                topicMemoryManager.enqueue(conversationHistory, options);
+            }
+
+            function getTopicMemorySummary() {
+                if (!topicMemoryManager) return '';
+                const state = topicMemoryManager.getState();
+                const topics = Array.isArray(state.topics) ? state.topics.slice(-8) : [];
+                if (topics.length === 0) return '';
+                return topics.map(topic => {
+                    const chain = (topic.chain || [])
+                        .map(node => node.label)
+                        .filter(Boolean)
+                        .join(' -> ');
+                    const start = topic.startTime
+                        ? new Date(topic.startTime).toLocaleString('zh-CN', {
+                            hour12: false,
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                        })
+                        : '未知时间';
+                    return `- ${topic.title || '未命名话题'}（${start}）：${chain || '暂无因果链'}`;
+                }).join('\n');
+            }
 
             // ==================== 可视化诊断状态 ====================
             function formatDebugTime(ts) {
@@ -2320,26 +2471,60 @@
                 return Array.isArray(value) ? value.length : 0;
             }
 
+            function countLongTermEntriesFromValue(longTerm = {}) {
+                const bi = longTerm.basicInfo || {};
+                let n = 0;
+                if (bi.age != null && bi.age !== '') n++;
+                if (bi.job != null && bi.job !== '') n++;
+                n += countArray(bi.pets);
+                n += countArray(bi.tools);
+                n += countArray(longTerm.preferences);
+                n += countArray(longTerm.aiLearning);
+                n += countArray(longTerm.expenses);
+                n += countArray(longTerm.facts);
+                return n;
+            }
+
+            function countVolatileEntriesFromValue(volatile = {}) {
+                const plans = (volatile.plans || []).filter(p => p && p.content).length;
+                const events = (volatile.temporaryEvents || []).filter(e => e && e.content).length;
+                return plans + events;
+            }
+
             function summarizeMemoryStorage() {
                 const shortStore = safeParseStorage(STORAGE_KEYS.SHORT_TERM);
                 const longStore = safeParseStorage(STORAGE_KEYS.LONG_TERM);
                 const volatileStore = safeParseStorage(STORAGE_KEYS.VOLATILE);
+                const topicStore = safeParseStorage(STORAGE_KEYS.TOPIC_MEMORY);
                 const shortEntries = shortStore.value && Array.isArray(shortStore.value.entries)
                     ? shortStore.value.entries.length
                     : 0;
                 const longValue = longStore.value || {};
                 const volatileValue = volatileStore.value || {};
-                const longCount =
-                    countArray(longValue.expenses) +
-                    countArray(longValue.preferences) +
-                    countArray(longValue.aiLearning) +
-                    countArray(longValue.facts);
-                const volatileCount = countArray(volatileValue.plans) + countArray(volatileValue.temporaryEvents);
+                const topicValue = topicStore.value || {};
+                const topicCount = countArray(topicValue.topics);
+                const longCount = countLongTermEntriesFromValue(longValue);
+                const volatileCount = countVolatileEntriesFromValue(volatileValue);
+                const runtimeSnapshot = memorySystem.getDebugSnapshot();
+                const storageSnapshot = {
+                    shortTerm: shortEntries,
+                    longTerm: longCount,
+                    volatile: volatileCount,
+                    basicInfo: countDefinedBasicInfo(longValue.basicInfo),
+                    temporaryEvents: countArray(volatileValue.temporaryEvents),
+                    activeTemporaryEvents: (volatileValue.temporaryEvents || []).filter(e =>
+                        e && e.content && memorySystem._isTempEventActive(e)
+                    ).length,
+                };
                 return {
                     shortStore,
                     longStore,
                     volatileStore,
-                    summary: `短期 ${shortEntries} / 长期 ${longCount} / 波动 ${volatileCount}`,
+                    topicStore,
+                    summary: `短期 ${shortEntries} / 话题 ${topicCount} / 长期 ${longCount} / 波动 ${volatileCount}`,
+                    runtimeSnapshot,
+                    storageSnapshot,
+                    isRuntimeStorageSynced: JSON.stringify(runtimeSnapshot) === JSON.stringify(storageSnapshot),
                     preview: {
                         [STORAGE_KEYS.SHORT_TERM]: {
                             bytes: shortStore.raw.length,
@@ -2356,6 +2541,13 @@
                             value: volatileStore.value,
                             error: volatileStore.error,
                         },
+                        [STORAGE_KEYS.TOPIC_MEMORY]: {
+                            bytes: topicStore.raw.length,
+                            value: topicStore.value,
+                            error: topicStore.error,
+                        },
+                        runtimeSnapshot,
+                        storageSnapshot,
                     },
                 };
             }
@@ -2391,19 +2583,27 @@
                 const directTempEvent = volatileFromStorage.temporaryEvent || volatileFromRuntime.temporaryEvent || null;
                 const directTempEvents = volatileFromStorage.temporaryEvents || volatileFromRuntime.temporaryEvents || [];
                 const runtimeTempEvents = volatileFromRuntime.temporaryEvents || [];
-                const memoryPanelExists = !!document.querySelector('#memory-panel');
+                const memoryPanelExists = !!(document.querySelector('#memShort') &&
+                    document.querySelector('#memLong') &&
+                    document.querySelector('#memVolatile'));
                 const now = Date.now();
 
                 if (debugPanelUpdated) debugPanelUpdated.textContent = formatDebugTime(now);
                 if (debugMemoryPanelExists) {
                     debugMemoryPanelExists.textContent = memoryPanelExists
-                        ? '存在'
-                        : '不存在（当前页面使用 #sidebar / #memVolatile）';
+                        ? '存在（#memShort/#memLong/#memVolatile）'
+                        : '缺少记忆分区 DOM';
                     debugMemoryPanelExists.className = memoryPanelExists
                         ? 'debug-value debug-status-ok'
                         : 'debug-value debug-status-warn';
                 }
-                if (debugLocalStorageSummary) debugLocalStorageSummary.textContent = storage.summary;
+                if (debugLocalStorageSummary) {
+                    debugLocalStorageSummary.textContent = storage.summary +
+                        (storage.isRuntimeStorageSynced ? ' / 已同步' : ' / 运行时与存储不一致');
+                    debugLocalStorageSummary.className = storage.isRuntimeStorageSynced
+                        ? 'debug-value debug-status-ok'
+                        : 'debug-value debug-status-warn';
+                }
                 if (debugTemporarySummary) {
                     debugTemporarySummary.textContent =
                         `temporaryEvent ${directTempEvent ? '有' : '无'} / ` +
@@ -2412,12 +2612,14 @@
                 }
                 if (debugLastRender) {
                     debugLastRender.textContent =
-                        `消息 ${formatDebugTime(debugState.lastRenderAt)}；记忆面板 ${formatDebugTime(debugState.lastMemoryPanelRenderAt)}`;
+                        `消息 ${formatDebugTime(debugState.lastRenderAt)}；记忆面板 ${formatDebugTime(debugState.lastMemoryPanelRenderAt)}；保存 ${formatDebugTime(debugState.lastMemorySaveAt)}`;
                 }
                 if (debugLastError) debugLastError.textContent = debugState.lastError || '暂无';
                 if (debugStoragePreview) {
                     debugStoragePreview.textContent = JSON.stringify({
                         activeFocus,
+                        memoryStorageSynced: storage.isRuntimeStorageSynced,
+                        lastMemorySaveSnapshot: debugState.lastMemorySaveSnapshot,
                         localStorage: storage.preview,
                         temporaryEvent: directTempEvent,
                         temporaryEvents: Array.isArray(directTempEvents) ? directTempEvents.slice(-5) : directTempEvents,
@@ -2446,6 +2648,7 @@
                     autoSaveInterval: 10,
                     rememberApiKey: false,
                     debugCodeSearch: true,
+                    webSearchMode: 'auto',
                 };
                 try {
                     const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
@@ -2488,6 +2691,7 @@
                 autoSaveToggle.checked = appSettings.autoSave || false;
                 autoSaveInterval.value = appSettings.autoSaveInterval || 10;
                 debugCodeToggle.checked = appSettings.debugCodeSearch !== false;
+                webSearchModeSelect.value = appSettings.webSearchMode || 'auto';
             }
 
             // ==================== Toast ====================
@@ -2533,9 +2737,10 @@
 
             // ==================== 渲染消息 ====================
             function renderMessage(role, content, timestamp = null, options = {}) {
-                const { applyMemoryUpdate = false } = options;
+                const { applyMemoryUpdate = false, messageId = null } = options;
                 const msgDiv = document.createElement('div');
                 msgDiv.className = `message ${role}`;
+                if (messageId) msgDiv.dataset.messageId = messageId;
                 const avatarText = role === 'user' ? 'U' : 'AI';
                 const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit',
                     minute: '2-digit' }) : new Date().toLocaleTimeString('zh-CN', { hour: '2-digit',
@@ -3089,6 +3294,106 @@
                 return response.json();
             }
 
+            function extractHttpUrls(text) {
+                return Array.from(text.matchAll(/https?:\/\/[^\s<>"'，。！？；、)）\]]+/gi))
+                    .map(match => match[0].replace(/[.,;:!?，。！？；]+$/, ''));
+            }
+
+            function stripWebTrigger(text) {
+                return text
+                    .replace(/^\/web\b/i, '')
+                    .replace(/#联网|@联网/g, '')
+                    .trim();
+            }
+
+            function looksLikeWebRequest(text, settings) {
+                const mode = settings.webSearchMode || 'auto';
+                if (mode === 'off') return false;
+
+                const raw = text.trim();
+                const manualTrigger = /^\/web\b/i.test(raw) || /#联网|@联网/.test(raw);
+                const hasUrl = extractHttpUrls(raw).length > 0;
+                if (mode === 'manual') return manualTrigger || hasUrl;
+                if (manualTrigger || hasUrl) return true;
+
+                return /最新|现在|今天|昨日|昨天|本周|今年|目前|实时|新闻|公告|价格|股价|汇率|天气|赛事|赛程|版本|发布|更新|政策|法规|排名|榜单|官网|资料来源|查一下|搜一下|联网|web|internet|search|latest|today|current|news|price|version/i.test(raw);
+            }
+
+            async function fetchWebJson(url) {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => ({}));
+                    throw new Error(payload.error || `联网检索失败 (${response.status})`);
+                }
+                return response.json();
+            }
+
+            function formatWebReadContext(payload) {
+                const text = (payload.text || '').trim();
+                if (!text) return '';
+                return [
+                    "## 联网读取上下文",
+                    "以下内容来自用户提供的网页链接。回答时如果使用这些信息，必须标注来源 [1]，不要编造网页中没有的事实。",
+                    "",
+                    "[1] " + (payload.title || payload.url),
+                    "URL: " + payload.url,
+                    "",
+                    text,
+                ].join("\n");
+            }
+
+            function formatWebSearchContext(payload) {
+                const sources = payload.sources || [];
+                if (!sources.length) {
+                    return [
+                        "## 联网检索上下文",
+                        "已尝试联网检索，但没有获得可用结果。请明确告诉用户搜索结果不足，不要编造实时信息。",
+                        "检索词: " + (payload.query || ''),
+                        "搜索提供方: " + (payload.provider || 'unknown'),
+                    ].join("\n");
+                }
+
+                const lines = [
+                    "## 联网检索上下文",
+                    "以下是联网检索结果。回答时如果使用其中信息，必须用 [1]、[2] 这样的编号标注来源，并在末尾列出来源 URL。",
+                    "如果来源不足、过期或互相矛盾，请明确说明不确定。不要把新闻、价格、版本号等时效信息写入长期记忆，除非用户明确要求记住。",
+                    "检索词: " + (payload.query || ''),
+                    "搜索提供方: " + (payload.provider || 'unknown'),
+                    "",
+                ];
+
+                sources.forEach((source, index) => {
+                    const sourceNo = index + 1;
+                    lines.push("[" + sourceNo + "] " + (source.title || source.url));
+                    lines.push("URL: " + source.url);
+                    if (source.published) lines.push("日期: " + source.published);
+                    if (source.snippet) lines.push("摘要: " + source.snippet);
+                    if (source.readError) lines.push("读取提示: " + source.readError);
+                    if (source.text) {
+                        lines.push("正文摘录:");
+                        lines.push(source.text);
+                    }
+                    lines.push("");
+                });
+
+                return lines.join("\n");
+            }
+
+            async function buildWebContext(userText, settings) {
+                if (!looksLikeWebRequest(userText, settings)) return '';
+
+                const urls = extractHttpUrls(userText);
+                if (urls.length) {
+                    const payload = await fetchWebJson(`/api/web/read?url=${encodeURIComponent(urls[0])}`);
+                    return formatWebReadContext(payload);
+                }
+
+                const query = stripWebTrigger(userText);
+                if (!query) return '';
+                const payload = await fetchWebJson(`/api/web/context?q=${encodeURIComponent(query)}&limit=4`);
+                return formatWebSearchContext(payload);
+            }
+
             async function buildCodeDebugContext(userText, settings) {
                 if (settings.debugCodeSearch === false || !looksLikeCodeDebugRequest(userText)) return '';
 
@@ -3255,6 +3560,7 @@
             // ==================== 构建系统提示 ====================
             function buildSystemPrompt() {
                 const memorySummary = memorySystem.getMemorySummary();
+                const topicMemorySummary = getTopicMemorySummary();
                 
                 const systemPromptParts = [
                     "你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。",
@@ -3270,6 +3576,7 @@
                     "",
                     "## 已存储的记忆",
                     memorySummary,
+                    topicMemorySummary ? "\n## 话题短期记忆\n" + topicMemorySummary : "",
                     "",
                     "## 当前界面选择",
                     selectedMemoryContextText(),
@@ -3280,6 +3587,12 @@
                     "- 如果上下文显示已检索但无结果，不要说自己没有文件系统权限；应说明没有命中，并请用户给出更具体的函数名、文件名或错误关键词。",
                     "- 回答必须优先引用上下文中的文件、函数/类和行号，不要编造未检索到的代码。",
                     "- 如果上下文不足，直接告诉用户需要继续检索的关键词或文件。",
+                    "",
+                    "## 联网检索",
+                    "- 当系统额外提供“联网检索上下文”或“联网读取上下文”时，你可以基于这些资料回答实时、最新、网页、新闻、价格、版本、政策等问题。",
+                    "- 使用联网资料时，在正文对应句子后用 [1]、[2] 这样的编号标注来源，并在回答末尾列出来源 URL。",
+                    "- 如果联网资料不足、过期、互相矛盾或没有命中，直接说明不确定，不要编造。",
+                    "- 新闻、价格、版本号、排名等时效信息默认不要写入长期记忆；只有用户明确说“记住”时才写入。",
                     "",
                     "## 记忆面板调试",
                     "- 当系统额外提供“记忆面板调试上下文”时，你可以基于该上下文判断左侧记忆面板的实际显示状态。",
@@ -3437,8 +3750,13 @@
 
                 // 渲染用户消息
                 const userTimestamp = Date.now();
-                renderMessage('user', userText, userTimestamp);
-                const userMsgForHistory = { role: 'user', content: userText, timestamp: userTimestamp };
+                const userMsgForHistory = {
+                    id: createMessageId('user', userTimestamp),
+                    role: 'user',
+                    content: userText,
+                    timestamp: userTimestamp,
+                };
+                renderMessage('user', userText, userTimestamp, { messageId: userMsgForHistory.id });
                 conversationHistory.push(userMsgForHistory);
                 setActiveFocus(focusTaskName, '本地记忆意图识别', ['跳过本地处理', '重复发送']);
 
@@ -3467,18 +3785,24 @@
                         ? '已删除这条记忆。'
                         : '没有找到可删除的记忆。');
                     const aiTimestamp = Date.now();
-                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, { applyMemoryUpdate: true });
-                    conversationHistory.push({
+                    const aiMsgForHistory = {
+                        id: createMessageId('assistant', aiTimestamp),
                         role: 'assistant',
                         content: localResponse,
                         timestamp: aiTimestamp,
+                    };
+                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, {
+                        applyMemoryUpdate: true,
+                        messageId: aiMsgForHistory.id,
                     });
+                    conversationHistory.push(aiMsgForHistory);
                     persistChatHistory();
                     isProcessing = false;
                     sendBtn.disabled = false;
                     userInput.disabled = false;
                     setThinkingState(false);
                     userInput.focus();
+                    enqueueTopicMemory();
                     updateMemoryPanel();
                     setActiveFocus('空闲', '等待输入', []);
                     return;
@@ -3489,18 +3813,24 @@
                         ? '已修改这条记忆。'
                         : '没有找到可修改的记忆。');
                     const aiTimestamp = Date.now();
-                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, { applyMemoryUpdate: false });
-                    conversationHistory.push({
+                    const aiMsgForHistory = {
+                        id: createMessageId('assistant', aiTimestamp),
                         role: 'assistant',
                         content: localResponse,
                         timestamp: aiTimestamp,
+                    };
+                    renderMessage('ai', localResponse + '<!--MEMORY_UPDATE:{}-->', aiTimestamp, {
+                        applyMemoryUpdate: false,
+                        messageId: aiMsgForHistory.id,
                     });
+                    conversationHistory.push(aiMsgForHistory);
                     persistChatHistory();
                     isProcessing = false;
                     sendBtn.disabled = false;
                     userInput.disabled = false;
                     setThinkingState(false);
                     userInput.focus();
+                    enqueueTopicMemory();
                     updateMemoryPanel();
                     setActiveFocus('空闲', '等待输入', []);
                     return;
@@ -3514,6 +3844,7 @@
                     userInput.disabled = false;
                     setThinkingState(false);
                     userInput.focus();
+                    enqueueTopicMemory();
                     setActiveFocus('配置 API Key', '等待用户保存设置', ['发送消息']);
                     return;
                 }
@@ -3522,6 +3853,17 @@
                 setActiveFocus(focusTaskName, '构建上下文', ['跳过记忆快照', '重复发送']);
                 const systemPrompt = buildSystemPrompt();
                 const memoryPanelContext = buildMemoryPanelDebugContext(userText);
+                let webContext = '';
+                try {
+                    if (looksLikeWebRequest(userText, settings)) {
+                        setActiveFocus(focusTaskName, '联网检索', ['网络失败', '搜索结果不足']);
+                        webContext = await buildWebContext(userText, settings);
+                    }
+                } catch (webError) {
+                    recordDebugError(webError, '联网检索失败');
+                    debugLog('联网检索失败:', webError);
+                    showToast('联网检索失败，将继续普通对话');
+                }
                 let codeDebugContext = '';
                 try {
                     codeDebugContext = await buildCodeDebugContext(userText, settings);
@@ -3534,6 +3876,7 @@
                 const apiMessages = [
                     { role: 'system', content: systemPrompt },
                     ...(memoryPanelContext ? [{ role: 'system', content: memoryPanelContext }] : []),
+                    ...(webContext ? [{ role: 'system', content: webContext }] : []),
                     ...(codeDebugContext ? [{ role: 'system', content: codeDebugContext }] : []),
                     ...buildApiConversationMessages(),
                 ];
@@ -3565,13 +3908,17 @@
                     debugLog('🔍 AI 返回内容长度:', aiResponse.length);
 
                     const parsedAiResponse = parseAIResponseMemoryUpdate(aiResponse, !codeDebugRequest);
-                    renderMessage('ai', parsedAiResponse.clean, aiTimestamp, { applyMemoryUpdate: false });
                     const cleanAiResponse = stripVisibleTimestampPrefixes(parsedAiResponse.clean);
                     const aiMsgForHistory = { 
+                        id: createMessageId('assistant', aiTimestamp),
                         role: 'assistant', 
                         content: cleanAiResponse,
                         timestamp: aiTimestamp 
                     };
+                    renderMessage('ai', parsedAiResponse.clean, aiTimestamp, {
+                        applyMemoryUpdate: false,
+                        messageId: aiMsgForHistory.id,
+                    });
                     conversationHistory.push(aiMsgForHistory);
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
@@ -3598,6 +3945,7 @@
                     userInput.disabled = false;
                     setThinkingState(false);
                     userInput.focus();
+                    enqueueTopicMemory();
                     updateMemoryPanel();
                     setActiveFocus('空闲', '等待输入', []);
                 }
@@ -3614,6 +3962,7 @@
 
             function persistChatHistory() {
                 try {
+                    normalizeConversationHistoryIds();
                     compactConversationHistory();
                     localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify({
                         version: 2,
@@ -3624,23 +3973,82 @@
             }
 
             function countLongTermEntries() {
-                const bi = memorySystem.longTerm.basicInfo || {};
-                let n = 0;
-                if (bi.age != null && bi.age !== '') n++;
-                if (bi.job != null && bi.job !== '') n++;
-                n += (bi.pets || []).length;
-                n += (bi.tools || []).length;
-                n += (memorySystem.longTerm.preferences || []).length;
-                n += (memorySystem.longTerm.aiLearning || []).length;
-                n += (memorySystem.longTerm.expenses || []).length;
-                n += (memorySystem.longTerm.facts || []).length;
-                return n;
+                return countLongTermEntriesFromValue(memorySystem.longTerm);
             }
 
             function countVolatileEntries() {
-                const plans = (memorySystem.volatile.plans || []).filter(p => p && p.content).length;
-                const events = (memorySystem.volatile.temporaryEvents || []).filter(e => e && e.content).length;
-                return plans + events;
+                return countVolatileEntriesFromValue(memorySystem.volatile);
+            }
+
+            function renderTopicMemoryPanel() {
+                const panel = $('#topicMemoryPanel');
+                if (!panel) return;
+                if (!topicMemoryManager) {
+                    panel.innerHTML =
+                        '<h4><span class="dot dot-topic"></span>话题检查</h4>' +
+                        '<div class="empty-hint">话题模块未加载</div>';
+                    return;
+                }
+
+                const state = topicMemoryManager.getState();
+                const topics = Array.isArray(state.topics) ? state.topics : [];
+                const status = state.status || {};
+                const busy = ['queued', 'processing', 'waiting'].includes(status.phase);
+                const statusText = status.text || '等待新消息';
+                const markerText = state.marker && state.marker.lastProcessedAt
+                    ? '整理到 ' + new Date(state.marker.lastProcessedAt).toLocaleTimeString('zh-CN', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                    })
+                    : '未整理';
+
+                let html =
+                    '<h4><span class="dot dot-topic"></span>话题检查</h4>' +
+                    '<div class="topic-status-line">' +
+                    '<span class="topic-status-main">' +
+                    '<span class="topic-spinner' + (busy ? ' busy' : '') + '"></span>' +
+                    '<span>' + escapeHTML(statusText) + '</span>' +
+                    '</span>' +
+                    '<span>' + topics.length + ' 个话题</span>' +
+                    '</div>' +
+                    '<div class="topic-status-line"><span>' + escapeHTML(markerText) + '</span>' +
+                    '<span>' + (state.pendingCount || 0) + ' 条待处理</span></div>';
+
+                if (state.lastError) {
+                    html += '<div class="empty-hint">最近错误：' + escapeHTML(state.lastError) + '</div>';
+                }
+
+                if (topics.length === 0) {
+                    html += '<div class="empty-hint">暂无话题归类</div>';
+                    panel.innerHTML = html;
+                    return;
+                }
+
+                topics.slice(-8).reverse().forEach(topic => {
+                    const chainLabels = (topic.chain || []).map(node => node.label).filter(Boolean);
+                    const chainText = chainLabels.length ? chainLabels.join(' -> ') : '暂无因果链';
+                    const timeText = topic.startTime
+                        ? new Date(topic.startTime).toLocaleString('zh-CN', {
+                            hour12: false,
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                        })
+                        : '未知时间';
+                    const msgCount = Array.isArray(topic.messageIds) ? topic.messageIds.length : 0;
+                    html +=
+                        '<div class="mem-item" role="button" tabindex="0" data-memory-target="' +
+                        encodeURIComponent(JSON.stringify({ scope: 'topicMemory', id: topic.id, title: topic.title })) +
+                        '" data-memory-label="' + encodeURIComponent(topic.title || '话题记忆') + '">' +
+                        escapeHTML(topic.title || '未命名话题') +
+                        '<div class="mem-meta">' + escapeHTML(timeText) + ' · ' + msgCount + ' 条消息</div>' +
+                        '<div class="topic-chain">' + escapeHTML(chainText) +
+                        ' <span class="topic-node-count">(' + (topic.chain || []).length + ' 节点)</span></div>' +
+                        '</div>';
+                });
+
+                panel.innerHTML = html;
             }
 
             // ==================== 更新记忆面板 ====================
@@ -3654,6 +4062,7 @@
                 if (sidebarStats) {
                     sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条';
                 }
+                renderTopicMemoryPanel();
 
                 const sevenDays = 7 * 24 * 60 * 60 * 1000;
                 const now = Date.now();
@@ -3852,6 +4261,7 @@
                     autoSave: autoSaveToggle.checked,
                     autoSaveInterval: parseInt(autoSaveInterval.value),
                     debugCodeSearch: debugCodeToggle.checked,
+                    webSearchMode: webSearchModeSelect.value,
                 };
                 persistSettings(newSettings);
                 appSettings = newSettings;
@@ -3887,6 +4297,7 @@
             function exportMemoryToFile() {
                 compactConversationHistory();
                 const data = memorySystem.exportData(conversationHistory, conversationSummary);
+                if (topicMemoryManager) data.topicMemory = topicMemoryManager.getState();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
             }
@@ -3934,6 +4345,7 @@
             btnExportMem.addEventListener('click', function() {
                 compactConversationHistory();
                 const data = memorySystem.exportData(conversationHistory, conversationSummary);
+                if (topicMemoryManager) data.topicMemory = topicMemoryManager.getState();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
                 showToast('记忆已导出');
@@ -3956,6 +4368,7 @@
                         let shortImported = 0;
                         let longImported = 0;
                         let volatileImported = 0;
+                        let topicImported = 0;
                         let hasChatChanges = false;
                         let hasSummaryChanges = false;
 
@@ -3985,12 +4398,15 @@
                                     const existingIndex = conversationHistory.findIndex(m => m.timestamp === timestamp);
                                     if (existingIndex >= 0) {
                                         conversationHistory[existingIndex] = {
+                                            id: msg.id || conversationHistory[existingIndex].id ||
+                                                createMessageId(msg.role, timestamp),
                                             role: msg.role,
                                             content: cleanContent,
                                             timestamp: timestamp
                                         };
                                     } else {
                                         conversationHistory.push({
+                                            id: msg.id || createMessageId(msg.role, timestamp),
                                             role: msg.role,
                                             content: cleanContent,
                                             timestamp: timestamp
@@ -4145,6 +4561,10 @@
                             }
                         }
 
+                        if (imported.topicMemory && topicMemoryManager) {
+                            topicImported = topicMemoryManager.importData(imported.topicMemory);
+                        }
+
                         if (hasChatChanges || hasSummaryChanges) {
                             persistChatHistory();
                         }
@@ -4156,7 +4576,7 @@
                             conversationHistory.forEach(msg => {
                                 if (msg.role === 'user' || msg.role === 'assistant') {
                                     const role = msg.role === 'assistant' ? 'ai' : 'user';
-                                    renderMessage(role, msg.content, msg.timestamp);
+                                    renderMessage(role, msg.content, msg.timestamp, { messageId: msg.id });
                                 }
                             });
                         }
@@ -4164,9 +4584,11 @@
                         let msg = '导入完成：';
                         if (chatImported > 0) msg += `对话${chatImported}条、`;
                         if (shortImported > 0) msg += `短期${shortImported}条、`;
+                        if (topicImported > 0) msg += `话题${topicImported}条、`;
                         if (longImported > 0) msg += `长期${longImported}条、`;
                         if (volatileImported > 0) msg += `波动${volatileImported}条、`;
-                        if (chatImported === 0 && shortImported === 0 && longImported === 0 && volatileImported === 0) {
+                        if (chatImported === 0 && shortImported === 0 && topicImported === 0 &&
+                            longImported === 0 && volatileImported === 0) {
                             msg = '未导入新数据（可能已存在或格式无效）';
                         } else {
                             msg = msg.replace(/、$/, '');
@@ -4184,6 +4606,7 @@
             btnClearAllMem.addEventListener('click', function() {
                 if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
                     memorySystem.clearAll();
+                    if (topicMemoryManager) topicMemoryManager.clear();
                     clearSelectedMemory();
                     clearChatHistory();
                     updateMemoryPanel();
@@ -4254,15 +4677,17 @@
                             conversationSummary = typeof parsed.summary === 'string' ? parsed.summary : '';
                         }
                         if (conversationHistory.length > 0) {
+                            normalizeConversationHistoryIds();
                             compactConversationHistory();
                             // 渲染缓存的对话
                             conversationHistory.forEach(msg => {
                                 if (msg.role === 'user' || msg.role === 'assistant') {
                                     const role = msg.role === 'assistant' ? 'ai' : 'user';
-                                    renderMessage(role, msg.content, msg.timestamp);
+                                    renderMessage(role, msg.content, msg.timestamp, { messageId: msg.id });
                                 }
                             });
                             persistChatHistory();
+                            enqueueTopicMemory();
                         }
                     }
                 } catch (e) { /* ignore */ }
@@ -4329,6 +4754,7 @@
                 clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
                 getActiveFocus: () => activeFocus,
+                getMemoryDebugSnapshot: () => memorySystem.getDebugSnapshot(),
                 refreshDebugPanel,
             };
 
