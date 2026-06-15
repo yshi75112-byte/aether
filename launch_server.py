@@ -1,11 +1,16 @@
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import ast
+from html import unescape
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import socket
-from urllib.parse import parse_qs, urlparse
+import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.request import Request, urlopen
 import webbrowser
 
 
@@ -66,6 +71,15 @@ MAX_SYMBOL_CODE_LINES = 900
 MAX_CONTEXT_CODE_CHARS = 60_000
 MAX_CONTEXT_SYMBOLS = 4
 MAX_CONTEXT_FALLBACK_SNIPPETS = 2
+MAX_WEB_QUERY_LENGTH = 180
+MAX_WEB_RESULTS = 6
+MAX_WEB_CONTEXT_SOURCES = 4
+MAX_WEB_READ_BYTES = 2_000_000
+MAX_WEB_TEXT_CHARS = 10_000
+MAX_WEB_CONTEXT_CHARS = 18_000
+WEB_TIMEOUT_SECONDS = 8
+WEB_CACHE_TTL_SECONDS = 600
+WEB_CACHE = {}
 
 
 class NoCacheHandler(SimpleHTTPRequestHandler):
@@ -85,6 +99,15 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/debug/context":
             self._handle_debug_context(parsed)
+            return
+        if parsed.path == "/api/web/search":
+            self._handle_web_search(parsed)
+            return
+        if parsed.path == "/api/web/read":
+            self._handle_web_read(parsed)
+            return
+        if parsed.path == "/api/web/context":
+            self._handle_web_context(parsed)
             return
         super().do_GET()
 
@@ -212,6 +235,389 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
             return
 
         self._send_json(200, payload)
+
+    def _handle_web_search(self, parsed):
+        params = parse_qs(parsed.query)
+        query = (params.get("q", [""])[0] or "").strip()
+        if not query:
+            self._send_json(400, {"error": "Missing query"})
+            return
+        if len(query) > MAX_WEB_QUERY_LENGTH:
+            query = query[:MAX_WEB_QUERY_LENGTH]
+
+        try:
+            limit = min(MAX_WEB_RESULTS, max(1, int(params.get("limit", ["5"])[0])))
+        except ValueError:
+            limit = 5
+
+        try:
+            payload = search_web(query, limit=limit)
+        except RuntimeError as exc:
+            self._send_json(502, {"error": str(exc)})
+            return
+
+        self._send_json(200, payload)
+
+    def _handle_web_read(self, parsed):
+        params = parse_qs(parsed.query)
+        url = (params.get("url", [""])[0] or "").strip()
+        if not url:
+            self._send_json(400, {"error": "Missing url"})
+            return
+
+        try:
+            payload = read_web_url(url)
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        except RuntimeError as exc:
+            self._send_json(502, {"error": str(exc)})
+            return
+
+        self._send_json(200, payload)
+
+    def _handle_web_context(self, parsed):
+        params = parse_qs(parsed.query)
+        query = (params.get("q", [""])[0] or "").strip()
+        if not query:
+            self._send_json(400, {"error": "Missing query"})
+            return
+        if len(query) > MAX_WEB_QUERY_LENGTH:
+            query = query[:MAX_WEB_QUERY_LENGTH]
+
+        try:
+            limit = min(MAX_WEB_CONTEXT_SOURCES, max(1, int(params.get("limit", ["4"])[0])))
+        except ValueError:
+            limit = MAX_WEB_CONTEXT_SOURCES
+
+        try:
+            payload = build_web_context(query, limit=limit)
+        except RuntimeError as exc:
+            self._send_json(502, {"error": str(exc)})
+            return
+
+        self._send_json(200, payload)
+
+
+def cache_get(key):
+    entry = WEB_CACHE.get(key)
+    if not entry:
+        return None
+    timestamp, payload = entry
+    if time.time() - timestamp > WEB_CACHE_TTL_SECONDS:
+        WEB_CACHE.pop(key, None)
+        return None
+    return payload
+
+
+def cache_set(key, payload):
+    WEB_CACHE[key] = (time.time(), payload)
+    if len(WEB_CACHE) > 80:
+        oldest_key = min(WEB_CACHE, key=lambda item: WEB_CACHE[item][0])
+        WEB_CACHE.pop(oldest_key, None)
+
+
+def web_provider_name():
+    provider = os.environ.get("WEB_SEARCH_PROVIDER", "auto").strip().lower()
+    if provider == "auto":
+        if os.environ.get("TAVILY_API_KEY"):
+            return "tavily"
+        if os.environ.get("BRAVE_SEARCH_API_KEY") or os.environ.get("WEB_SEARCH_API_KEY"):
+            return "brave"
+        return "duckduckgo"
+    return provider
+
+
+def http_request(url, method="GET", headers=None, body=None, timeout=WEB_TIMEOUT_SECONDS):
+    request_headers = {
+        "User-Agent": "AetherLocalWeb/1.0 (+https://localhost)",
+        "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.8",
+    }
+    if headers:
+        request_headers.update(headers)
+    req = Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with urlopen(req, timeout=timeout) as response:
+            content_type = response.headers.get("Content-Type", "")
+            raw = response.read(MAX_WEB_READ_BYTES + 1)
+            if len(raw) > MAX_WEB_READ_BYTES:
+                raise RuntimeError("Remote response is too large")
+            return response.status, content_type, raw
+    except HTTPError as exc:
+        detail = exc.read(500).decode("utf-8", errors="replace")
+        raise RuntimeError(f"Remote request failed ({exc.code}): {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Remote request failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("Remote request timed out") from exc
+
+
+def decode_bytes(raw, content_type=""):
+    match = re.search(r"charset=([\w.-]+)", content_type or "", re.I)
+    encodings = [match.group(1)] if match else []
+    encodings.extend(["utf-8", "gb18030", "latin-1"])
+    for encoding in encodings:
+        try:
+            return raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def normalize_space(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def strip_html(html_text):
+    text = re.sub(r"(?is)<(script|style|noscript|svg|iframe|header|footer|nav|form).*?</\1>", " ", html_text)
+    text = re.sub(r"(?is)<!--.*?-->", " ", text)
+    title_match = re.search(r"(?is)<title[^>]*>(.*?)</title>", html_text)
+    title = normalize_space(unescape(re.sub(r"(?is)<[^>]+>", " ", title_match.group(1)))) if title_match else ""
+    text = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = unescape(text)
+    lines = [normalize_space(line) for line in text.splitlines()]
+    lines = [line for line in lines if len(line) > 20]
+    body = "\n".join(lines)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return title, body
+
+
+def validate_public_http_url(url):
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Only http/https URLs are allowed")
+    if not parsed.hostname:
+        raise ValueError("URL host is missing")
+
+    hostname = parsed.hostname.strip().lower()
+    if hostname in {"localhost", "localhost.localdomain"}:
+        raise ValueError("Localhost URLs are not allowed")
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve URL host: {hostname}") from exc
+
+    for info in addr_infos:
+        address = info[4][0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            raise ValueError("URL resolved to an invalid IP address")
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError("Private, local, or reserved network URLs are not allowed")
+    return parsed.geturl()
+
+
+def normalize_search_result(title, url, snippet="", published=""):
+    title = normalize_space(unescape(title))
+    url = normalize_space(unescape(url))
+    snippet = normalize_space(unescape(snippet))
+    published = normalize_space(unescape(published))
+    if not title or not url:
+        return None
+    if url.startswith("//"):
+        url = "https:" + url
+    parsed = urlparse(url)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            url = unquote(target)
+    try:
+        validate_public_http_url(url)
+    except ValueError:
+        return None
+    return {
+        "title": title[:180],
+        "url": url,
+        "snippet": snippet[:600],
+        "published": published[:80],
+    }
+
+
+def search_web(query, limit=5):
+    cache_key = ("search", web_provider_name(), query, limit)
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    provider = web_provider_name()
+    if provider == "tavily":
+        payload = search_web_tavily(query, limit=limit)
+    elif provider == "brave":
+        payload = search_web_brave(query, limit=limit)
+    elif provider == "duckduckgo":
+        payload = search_web_duckduckgo(query, limit=limit)
+    else:
+        raise RuntimeError(f"Unsupported WEB_SEARCH_PROVIDER: {provider}")
+
+    cache_set(cache_key, payload)
+    return payload
+
+
+def search_web_brave(query, limit=5):
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY") or os.environ.get("WEB_SEARCH_API_KEY")
+    if not api_key:
+        raise RuntimeError("BRAVE_SEARCH_API_KEY or WEB_SEARCH_API_KEY is required for Brave search")
+
+    url = f"https://api.search.brave.com/res/v1/web/search?q={quote_plus(query)}&count={limit}&text_decorations=false"
+    _, content_type, raw = http_request(url, headers={
+        "Accept": "application/json",
+        "X-Subscription-Token": api_key,
+    })
+    data = json.loads(decode_bytes(raw, content_type))
+    results = []
+    for item in data.get("web", {}).get("results", []):
+        result = normalize_search_result(
+            item.get("title", ""),
+            item.get("url", ""),
+            item.get("description", ""),
+            item.get("age", "") or item.get("page_age", ""),
+        )
+        if result:
+            results.append(result)
+        if len(results) >= limit:
+            break
+    return {"query": query, "provider": "brave", "results": results}
+
+
+def search_web_tavily(query, limit=5):
+    api_key = os.environ.get("TAVILY_API_KEY") or os.environ.get("WEB_SEARCH_API_KEY")
+    if not api_key:
+        raise RuntimeError("TAVILY_API_KEY or WEB_SEARCH_API_KEY is required for Tavily search")
+
+    body = json.dumps({
+        "api_key": api_key,
+        "query": query,
+        "max_results": limit,
+        "search_depth": "basic",
+        "include_answer": False,
+        "include_raw_content": False,
+    }).encode("utf-8")
+    _, content_type, raw = http_request(
+        "https://api.tavily.com/search",
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        body=body,
+    )
+    data = json.loads(decode_bytes(raw, content_type))
+    results = []
+    for item in data.get("results", []):
+        result = normalize_search_result(
+            item.get("title", ""),
+            item.get("url", ""),
+            item.get("content", ""),
+            item.get("published_date", ""),
+        )
+        if result:
+            results.append(result)
+        if len(results) >= limit:
+            break
+    return {"query": query, "provider": "tavily", "results": results}
+
+
+def search_web_duckduckgo(query, limit=5):
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    _, content_type, raw = http_request(url)
+    html_text = decode_bytes(raw, content_type)
+    results = []
+    pattern = re.compile(
+        r'(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+        r'<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>'
+    )
+    for match in pattern.finditer(html_text):
+        title = re.sub(r"(?is)<[^>]+>", " ", match.group(2))
+        snippet = re.sub(r"(?is)<[^>]+>", " ", match.group(3))
+        result = normalize_search_result(title, match.group(1), snippet)
+        if result:
+            results.append(result)
+        if len(results) >= limit:
+            break
+
+    if not results:
+        fallback_pattern = re.compile(r'(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>')
+        for match in fallback_pattern.finditer(html_text):
+            title = re.sub(r"(?is)<[^>]+>", " ", match.group(2))
+            result = normalize_search_result(title, match.group(1), "")
+            if result:
+                results.append(result)
+            if len(results) >= limit:
+                break
+
+    return {"query": query, "provider": "duckduckgo", "results": results}
+
+
+def read_web_url(url):
+    safe_url = validate_public_http_url(url)
+    cache_key = ("read", safe_url)
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    _, content_type, raw = http_request(safe_url)
+    if not re.search(r"(text/html|text/plain|application/xhtml\+xml)", content_type or "", re.I):
+        raise RuntimeError(f"Unsupported content type: {content_type or 'unknown'}")
+
+    raw_text = decode_bytes(raw, content_type)
+    if re.search(r"text/plain", content_type or "", re.I):
+        title = safe_url
+        text = raw_text
+    else:
+        title, text = strip_html(raw_text)
+    text = text.strip()
+    if len(text) > MAX_WEB_TEXT_CHARS:
+        text = text[:MAX_WEB_TEXT_CHARS].rstrip() + "\n...[truncated]"
+
+    payload = {
+        "url": safe_url,
+        "title": title or safe_url,
+        "contentType": content_type,
+        "text": text,
+    }
+    cache_set(cache_key, payload)
+    return payload
+
+
+def build_web_context(query, limit=MAX_WEB_CONTEXT_SOURCES):
+    search_payload = search_web(query, limit=limit)
+    sources = []
+    chars_used = 0
+
+    for result in search_payload.get("results", []):
+        source = dict(result)
+        try:
+            page = read_web_url(result["url"])
+            source["title"] = page.get("title") or source["title"]
+            source["text"] = page.get("text", "")
+        except (RuntimeError, ValueError) as exc:
+            source["text"] = source.get("snippet", "")
+            source["readError"] = str(exc)
+
+        if not source.get("text") and not source.get("snippet"):
+            continue
+
+        remaining = MAX_WEB_CONTEXT_CHARS - chars_used
+        if remaining <= 0:
+            break
+        source["text"] = source.get("text", "")[: min(MAX_WEB_TEXT_CHARS, remaining)].rstrip()
+        chars_used += len(source.get("text", ""))
+        sources.append(source)
+        if len(sources) >= limit:
+            break
+
+    return {
+        "query": query,
+        "provider": search_payload.get("provider", web_provider_name()),
+        "sources": sources,
+    }
 
 
 def safe_project_path(rel_path):
