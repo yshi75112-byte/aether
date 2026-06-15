@@ -1469,6 +1469,7 @@
             const TOPIC_CARD_LIMIT = 20;
             const MAX_TOPIC_ORGANIZE_BATCH_MESSAGES = 10;
             const DEBUG_LOGS = false;
+            const BEIJING_TIME_ZONE = 'Asia/Shanghai';
             let autoSaveTimer = null; // 自动保存定时器
             let selectedMemory = null;
             const debugState = {
@@ -1483,6 +1484,71 @@
                 phase: '等待输入',
                 blockedJumps: [],
             };
+
+            // ==================== 北京时间系统 ====================
+            function formatBeijingDateTime(timestamp = Date.now(), options = {}) {
+                const parts = getBeijingDateParts(timestamp);
+                const dateText = options.includeYear === false ? parts.dateText.slice(5) : parts.dateText;
+                const weekdayText = options.includeWeekday ? ` ${parts.weekday}` : '';
+                const timeText = options.includeTime === false
+                    ? ''
+                    : ` ${options.includeSeconds ? parts.timeText : parts.timeText.slice(0, 5)}`;
+                return `${dateText}${weekdayText}${timeText}`.trim();
+            }
+
+            function formatBeijingTime(timestamp = Date.now()) {
+                const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+                return new Intl.DateTimeFormat('zh-CN', {
+                    timeZone: BEIJING_TIME_ZONE,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: false,
+                }).format(date);
+            }
+
+            function getBeijingDateParts(timestamp = Date.now()) {
+                const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+                const parts = new Intl.DateTimeFormat('zh-CN', {
+                    timeZone: BEIJING_TIME_ZONE,
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    weekday: 'long',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: false,
+                }).formatToParts(date).reduce((acc, part) => {
+                    if (part.type !== 'literal') acc[part.type] = part.value;
+                    return acc;
+                }, {});
+                const dateText = `${parts.year}-${parts.month}-${parts.day}`;
+                const timeText = `${parts.hour}:${parts.minute}:${parts.second}`;
+                return {
+                    dateText,
+                    timeText,
+                    weekday: parts.weekday,
+                    fullText: `${dateText} ${timeText} ${parts.weekday}`,
+                    timeZone: '北京时间（UTC+8，Asia/Shanghai）',
+                };
+            }
+
+            function getBeijingTemporalContext(timestamp = Date.now()) {
+                const now = timestamp instanceof Date ? timestamp : new Date(timestamp);
+                const today = getBeijingDateParts(now);
+                const oneDay = 24 * 60 * 60 * 1000;
+                const yesterday = getBeijingDateParts(now.getTime() - oneDay).dateText;
+                const tomorrow = getBeijingDateParts(now.getTime() + oneDay).dateText;
+                return [
+                    `当前北京时间：${today.fullText}`,
+                    `时区：${today.timeZone}`,
+                    `今天：${today.dateText}`,
+                    `昨天：${yesterday}`,
+                    `明天：${tomorrow}`,
+                    '当用户说“现在/今天/明天/昨天/今晚/本周”等相对时间时，默认按北京时间理解。',
+                    '如果回答涉及具体日期或日程，请尽量写出明确日期，避免只说相对时间。',
+                ].join('\n');
+            }
 
             // ==================== 存储键 ====================
             const STORAGE_KEYS = {
@@ -1712,7 +1778,7 @@
                         category: category || '未分类',
                         description: description || '',
                         timestamp: Date.now(),
-                        dateStr: new Date().toISOString().split('T')[0],
+                        dateStr: getBeijingDateParts().dateText,
                     };
                     // 检查重复（同一天相同金额和描述）
                     const dup = this.longTerm.expenses.find(e =>
@@ -2385,6 +2451,7 @@
                         chatSummary: chatSummary,
                         topicCards: topics,
                         exportedAt: new Date().toISOString(),
+                        exportedAtBeijing: formatBeijingDateTime(Date.now(), { includeWeekday: true, includeSeconds: true }),
                     };
                 }
 
@@ -2997,9 +3064,7 @@
                 msgDiv.className = `message ${role}`;
                 if (messageId) msgDiv.dataset.messageId = messageId;
                 const avatarText = role === 'user' ? 'U' : 'AI';
-                const timeStr = timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit',
-                    minute: '2-digit' }) : new Date().toLocaleTimeString('zh-CN', { hour: '2-digit',
-                    minute: '2-digit' });
+                const timeStr = formatBeijingTime(timestamp || Date.now());
 
                 // 始终剥离记忆标记，避免在聊天气泡中显示
                 let displayContent = stripMemoryUpdateMarkers(content);
@@ -3594,16 +3659,11 @@
                 compactConversationHistory();
                 const recentMessages = conversationHistory.slice(-MAX_API_HISTORY_MESSAGES).map(msg => {
                     const timeStr = msg.timestamp
-                        ? new Date(msg.timestamp).toLocaleString('zh-CN', {
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                        })
+                        ? formatBeijingDateTime(msg.timestamp, { includeWeekday: true })
                         : '';
                     return {
                         role: msg.role,
-                        content: timeStr ? `[${timeStr}] ${msg.content}` : msg.content
+                        content: timeStr ? `[北京时间 ${timeStr}] ${msg.content}` : msg.content
                     };
                 });
 
@@ -4251,9 +4311,13 @@
             function buildSystemPrompt() {
                 const memorySummary = memorySystem.getMemorySummary();
                 const topicMemorySummary = getTopicMemorySummary();
+                const beijingTemporalContext = getBeijingTemporalContext();
                 
                 const systemPromptParts = [
                     "你是一个高效、务实、简约的AI助手。你的回复风格是：讲重点、不啰嗦、高冷但有用。",
+                    "",
+                    "## 实时时间系统",
+                    beijingTemporalContext,
                     "",
                     "## 🚨 记忆更新规则【这是最关键的规则，必须严格遵守！】",
                     "❌ 如果你不遵守这个规则，记忆系统将无法工作，用户会很生气！",
@@ -4356,9 +4420,6 @@
                     "- 务实，提高用户行动能力",
                     "- 可以偶尔毒舌但保持有用",
                     "- 不要在正文开头或结尾输出时间戳，界面会自动显示消息时间",
-                    "",
-                    "## 时间戳",
-                    "- 当前时间：" + new Date().toISOString(),
                     "",
                     "⚠️ 【最后的提醒】一定记得在每条消息末尾加上记忆标记，不然记忆系统就坏了！"
                 ];
