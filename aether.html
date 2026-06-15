@@ -257,6 +257,110 @@
             color: var(--text-muted);
             font-style: italic;
         }
+        .topic-card {
+            border-bottom: 1px dotted #ece8df;
+            padding: 8px 0;
+        }
+        .topic-card.failed {
+            border-left: 3px solid #c77833;
+            padding-left: 8px;
+            background: #fffaf2;
+        }
+        .topic-card:last-child {
+            border-bottom: none;
+        }
+        .topic-card summary {
+            cursor: pointer;
+            list-style: none;
+        }
+        .topic-card summary::-webkit-details-marker {
+            display: none;
+        }
+        .topic-card summary::before {
+            content: "+";
+            float: right;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        .topic-card[open] summary::before {
+            content: "-";
+        }
+        .topic-title {
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: var(--accent);
+            padding-right: 18px;
+            word-break: break-word;
+        }
+        .topic-summary {
+            margin-top: 4px;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+            word-break: break-word;
+        }
+        .topic-meta {
+            margin-top: 4px;
+            font-size: 0.64rem;
+            color: var(--text-muted);
+        }
+        .topic-failure {
+            margin-top: 7px;
+            padding: 7px;
+            border-radius: 6px;
+            background: #fff3e3;
+            border: 1px solid #f0d5ad;
+            color: #7a4b12;
+            font-size: 0.68rem;
+            line-height: 1.45;
+            word-break: break-word;
+        }
+        .topic-retry-btn {
+            margin-top: 7px;
+            padding: 4px 8px;
+            border: 1px solid #d9c6a8;
+            border-radius: 6px;
+            background: var(--ivory);
+            color: var(--accent);
+            font-size: 0.68rem;
+            cursor: pointer;
+        }
+        .topic-retry-btn:hover {
+            background: var(--card);
+        }
+        .topic-nodes {
+            margin-top: 7px;
+            padding-left: 15px;
+            color: var(--text-secondary);
+            font-size: 0.7rem;
+            line-height: 1.45;
+        }
+        .topic-nodes li {
+            margin: 2px 0;
+        }
+        .topic-raw {
+            margin-top: 8px;
+            padding: 7px;
+            border-radius: 6px;
+            background: #fbfaf7;
+            border: 1px solid #eee9df;
+            max-height: 180px;
+            overflow: auto;
+        }
+        .topic-raw-message {
+            margin-bottom: 6px;
+            font-size: 0.66rem;
+            line-height: 1.4;
+            color: var(--text-secondary);
+            word-break: break-word;
+        }
+        .topic-raw-message:last-child {
+            margin-bottom: 0;
+        }
+        .topic-raw-role {
+            font-weight: 600;
+            color: var(--accent-soft);
+        }
         .sidebar-footer {
             padding: 10px 16px;
             border-top: 1px solid var(--border);
@@ -1030,6 +1134,11 @@
                 <button class="sidebar-close" id="sidebarClose" title="关闭面板">×</button>
             </div>
             <div class="sidebar-content" id="sidebarContent">
+                <!-- 话题卡片 -->
+                <div class="memory-section" id="memTopics">
+                    <h4><span class="dot dot-long"></span>话题卡片</h4>
+                    <div class="empty-hint">暂无话题记录</div>
+                </div>
                 <!-- 短期记忆 -->
                 <div class="memory-section" id="memShort">
                     <h4><span class="dot dot-short"></span>短期记忆（7天）</h4>
@@ -1225,6 +1334,7 @@
             const debugCodeToggle = $('#debugCodeToggle');
             const inputHint = $('#inputHint');
             const toastContainer = $('#toastContainer');
+            const memTopics = $('#memTopics');
             const btnCleanExpired = $('#btnCleanExpired');
             const btnExportMem = $('#btnExportMem');
             const btnImportMem = $('#btnImportMem');
@@ -1245,10 +1355,16 @@
             let isProcessing = false;
             let conversationHistory = []; // 最近对话消息，旧消息会压缩到 conversationSummary
             let conversationSummary = '';
+            let topicCards = [];
             const MAX_SHORT_TERM_ENTRIES = 50; // 短期记忆最多保留50条
             const MAX_STORED_CHAT_MESSAGES = 120;
             const MAX_API_HISTORY_MESSAGES = 24;
             const MAX_SUMMARY_ITEMS = 40;
+            const SUMMARY_MERGE_SIMILARITY = 0.56;
+            const SUMMARY_MAX_LINE_LENGTH = 260;
+            const MAX_TOPIC_KEY_NODES = 6;
+            const TOPIC_CARD_LIMIT = 20;
+            const MAX_TOPIC_ORGANIZE_BATCH_MESSAGES = 10;
             const DEBUG_LOGS = false;
             let autoSaveTimer = null; // 自动保存定时器
             let selectedMemory = null;
@@ -1275,6 +1391,62 @@
 
             function debugLog(...args) {
                 if (DEBUG_LOGS) console.log(...args);
+            }
+
+            function safeJsonParse(raw, fallbackValue = null, label = 'JSON') {
+                const text = String(raw || '').trim();
+                const attempts = [];
+                const tryParse = (candidate, source) => {
+                    if (!candidate || !String(candidate).trim()) return null;
+                    debugLog(`[${label}] JSON.parse candidate (${source}):`, String(candidate).trim());
+                    try {
+                        return {
+                            ok: true,
+                            value: JSON.parse(String(candidate).trim()),
+                            source,
+                            raw: text,
+                            error: '',
+                        };
+                    } catch (error) {
+                        attempts.push({
+                            source,
+                            error: error && error.message ? error.message : String(error),
+                        });
+                        return null;
+                    }
+                };
+
+                debugLog(`[${label}] raw AI output before JSON.parse:`, text);
+                const direct = tryParse(text, 'direct');
+                if (direct) return direct;
+
+                const codeBlockMatch = text.match(/```json\s*([\s\S]*?)```/i) ||
+                    text.match(/```\s*([\s\S]*?)```/i);
+                if (codeBlockMatch) {
+                    const codeBlock = tryParse(codeBlockMatch[1], 'json-code-block');
+                    if (codeBlock) return codeBlock;
+                }
+
+                const firstArray = text.indexOf('[');
+                const lastArray = text.lastIndexOf(']');
+                if (firstArray >= 0 && lastArray > firstArray) {
+                    const arrayText = text.slice(firstArray, lastArray + 1);
+                    const arrayParse = tryParse(arrayText, 'array-slice');
+                    if (arrayParse) return arrayParse;
+                }
+
+                const error = attempts.length
+                    ? attempts[attempts.length - 1].error
+                    : '没有可解析的 JSON 内容';
+                debugLog(`[${label}] safeJsonParse fallback:`, { error, attempts, raw: text });
+                return {
+                    ok: false,
+                    value: fallbackValue,
+                    source: 'fallback',
+                    raw: text,
+                    error,
+                    attempts,
+                };
             }
 
             // ==================== 记忆系统 ====================
@@ -1927,25 +2099,69 @@
                     return !expiry || now < expiry;
                 }
 
-                /** 简单相似度检测 */
+                /** 简单相似度检测：兼容中文短语、英文词和数字 */
                 _similarity(a, b) {
                     if (!a || !b) return 0;
-                    const shorter = a.length < b.length ? a : b;
-                    const longer = a.length < b.length ? b : a;
-                    if (shorter.length === 0) return 0;
+                    const normalizedA = this._normalizeForSimilarity(a);
+                    const normalizedB = this._normalizeForSimilarity(b);
+                    if (!normalizedA || !normalizedB) return 0;
+                    if (normalizedA === normalizedB) return 1;
+                    if (normalizedA.includes(normalizedB) || normalizedB.includes(normalizedA)) return 0.92;
+
+                    const tokensA = this._similarityTokens(normalizedA);
+                    const tokensB = this._similarityTokens(normalizedB);
+                    if (tokensA.size === 0 || tokensB.size === 0) return 0;
+
                     let matches = 0;
-                    const wordsA = new Set(shorter.split(/[\s,，。！？、]+/).filter(w => w.length > 1));
-                    const wordsB = longer.split(/[\s,，。！？、]+/).filter(w => w.length > 1);
-                    for (const w of wordsB) {
-                        if (wordsA.has(w)) matches++;
+                    for (const token of tokensA) {
+                        if (tokensB.has(token)) matches++;
                     }
-                    return wordsA.size > 0 ? matches / Math.max(wordsA.size, wordsB.length) : 0;
+                    return (2 * matches) / (tokensA.size + tokensB.size);
+                }
+
+                _normalizeForSimilarity(text) {
+                    return String(text || '')
+                        .toLowerCase()
+                        .replace(/<!--\s*memory_update\s*:[\s\S]*?\s*-->/gi, ' ')
+                        .replace(/\[[^\]]{1,32}\]/g, ' ')
+                        .replace(/^(用户|ai|assistant|user)\s*[:：]/i, ' ')
+                        .replace(/[^\p{Script=Han}a-z0-9]+/gu, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                }
+
+                _similarityTokens(normalizedText) {
+                    const tokens = new Set();
+                    const words = normalizedText.split(/\s+/).filter(Boolean);
+
+                    words.forEach(word => {
+                        if (/^[a-z0-9]+$/.test(word)) {
+                            tokens.add(word);
+                            return;
+                        }
+
+                        const chars = Array.from(word).filter(ch => /\p{Script=Han}/u.test(ch));
+                        if (chars.length === 1) {
+                            tokens.add(chars[0]);
+                            return;
+                        }
+
+                        for (let i = 0; i < chars.length - 1; i++) {
+                            tokens.add(chars[i] + chars[i + 1]);
+                        }
+                    });
+
+                    return tokens;
                 }
 
                 /** 合并内容 */
                 _mergeContent(oldContent, newContent) {
-                    if (newContent.length > oldContent.length) return newContent;
+                    oldContent = String(oldContent || '').trim();
+                    newContent = String(newContent || '').trim();
+                    if (!oldContent) return newContent;
+                    if (!newContent) return oldContent;
                     if (oldContent.includes(newContent)) return oldContent;
+                    if (newContent.includes(oldContent)) return newContent;
                     return oldContent + '；' + newContent;
                 }
 
@@ -2028,13 +2244,14 @@
                 }
 
                 /** 导出记忆 */
-                exportData(chatHistory = [], chatSummary = '') {
+                exportData(chatHistory = [], chatSummary = '', topics = []) {
                     return {
                         shortTerm: this.shortTerm,
                         longTerm: this.longTerm,
                         volatile: this.volatile,
                         chatHistory: chatHistory,
                         chatSummary: chatSummary,
+                        topicCards: topics,
                         exportedAt: new Date().toISOString(),
                     };
                 }
@@ -2044,13 +2261,15 @@
                     if (!content) return;
                     const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
                     if (!match) return;
-                    try {
-                        const memData = JSON.parse(match[1].trim());
+                    const parsed = safeJsonParse(match[1].trim(), null, 'MemorySystem.parseMemoryUpdate');
+                    if (parsed.ok) {
+                        const memData = parsed.value;
                         debugLog('📌 检测到记忆更新标记');
                         this._applyMemoryData(memData);
                         window.dispatchEvent(new CustomEvent('aether-memory-updated'));
-                    } catch (e) {
-                        console.warn('⚠ 记忆更新 JSON 解析失败:', e, match[1].substring(0, 120));
+                    } else {
+                        console.warn('⚠ 记忆更新 JSON 解析失败:', parsed.error, match[1].substring(0, 120));
+                        recordDebugError(parsed.error, '记忆更新 JSON 解析失败');
                     }
                 }
 
@@ -2622,12 +2841,10 @@
                 if (!content) return null;
                 const match = content.match(MEMORY_UPDATE_REGEX);
                 if (!match) return null;
-                try {
-                    return JSON.parse(match[1].trim());
-                } catch (e) {
-                    console.warn('⚠ 记忆更新 JSON 解析失败:', e, match[1].substring(0, 120));
-                    return null;
-                }
+                const parsed = safeJsonParse(match[1].trim(), null, 'MEMORY_UPDATE');
+                if (parsed.ok) return parsed.value;
+                console.warn('⚠ 记忆更新 JSON 解析失败:', parsed.error, match[1].substring(0, 120));
+                return null;
             }
 
             function stripMemoryUpdateMarkers(content) {
@@ -2645,17 +2862,23 @@
                 const responseWithMarker = ensureMemoryUpdateMarker(response);
                 const match = responseWithMarker.match(MEMORY_UPDATE_REGEX);
                 let memoryData = {};
+                let parseError = '';
+                let parseRaw = '';
 
                 if (match) {
-                    try {
-                        memoryData = JSON.parse(match[1].trim());
+                    parseRaw = match[1].trim();
+                    debugLog('[MEMORY_UPDATE] raw AI response before JSON.parse:', responseWithMarker);
+                    const parsed = safeJsonParse(parseRaw, {}, 'MEMORY_UPDATE');
+                    if (parsed.ok) {
+                        memoryData = parsed.value;
                         if (shouldApply) {
                             memorySystem._applyMemoryData(memoryData);
                             window.dispatchEvent(new CustomEvent('aether-memory-updated'));
                         }
-                    } catch (e) {
-                        console.error('记忆更新标记解析失败:', e);
-                        recordDebugError(e, '记忆更新标记解析失败');
+                    } else {
+                        parseError = parsed.error || 'JSON 解析失败';
+                        console.error('记忆更新标记解析失败:', parsed);
+                        recordDebugError(parseError, '记忆更新标记解析失败');
                     }
                 }
 
@@ -2663,6 +2886,8 @@
                     raw: responseWithMarker,
                     clean: stripMemoryUpdateMarkers(responseWithMarker),
                     memoryData,
+                    memoryParseError: parseError,
+                    memoryParseRaw: parseRaw,
                 };
             }
 
@@ -2682,6 +2907,435 @@
                 return `${time ? '[' + time + '] ' : ''}${role}: ${content}`;
             }
 
+            function parseSummaryLine(line) {
+                const text = String(line || '').trim();
+                const match = text.match(/^(\[[^\]]+\]\s*)?(用户|AI)\s*[:：]\s*(.*)$/i);
+                if (!match) {
+                    return { prefix: '', role: '', content: text };
+                }
+                return {
+                    prefix: (match[1] || '') + match[2] + ': ',
+                    role: match[2].toUpperCase() === 'AI' ? 'AI' : '用户',
+                    content: (match[3] || '').trim(),
+                };
+            }
+
+            function truncateSummaryLine(line) {
+                const text = String(line || '').trim();
+                return text.length > SUMMARY_MAX_LINE_LENGTH
+                    ? text.slice(0, SUMMARY_MAX_LINE_LENGTH - 1).trim() + '…'
+                    : text;
+            }
+
+            function mergeSummaryLine(oldLine, newLine) {
+                const oldParts = parseSummaryLine(oldLine);
+                const newParts = parseSummaryLine(newLine);
+                const mergedContent = memorySystem._mergeContent(oldParts.content, newParts.content);
+                return truncateSummaryLine((oldParts.prefix || newParts.prefix || '') + mergedContent);
+            }
+
+            function mergeConversationSummaryLines(existing, archived) {
+                const merged = existing.map(truncateSummaryLine).filter(Boolean);
+
+                archived.forEach(line => {
+                    const incoming = parseSummaryLine(line);
+                    let bestIndex = -1;
+                    let bestScore = 0;
+
+                    merged.forEach((candidate, index) => {
+                        const current = parseSummaryLine(candidate);
+                        if (current.role && incoming.role && current.role !== incoming.role) return;
+                        const score = memorySystem._similarity(current.content, incoming.content);
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestIndex = index;
+                        }
+                    });
+
+                    if (bestIndex >= 0 && bestScore >= SUMMARY_MERGE_SIMILARITY) {
+                        merged[bestIndex] = mergeSummaryLine(merged[bestIndex], line);
+                    } else {
+                        merged.push(truncateSummaryLine(line));
+                    }
+                });
+
+                return merged.slice(-MAX_SUMMARY_ITEMS);
+            }
+
+            function cleanTopicText(text, maxLength = 180) {
+                const cleaned = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(String(text || '')))
+                    .replace(/[#*_`>\[\]（）(){}<>]/g, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (!cleaned) return '';
+                return cleaned.length > maxLength ? cleaned.slice(0, maxLength - 1).trim() + '...' : cleaned;
+            }
+
+            function isLowValueTurn(userText, aiText) {
+                const text = cleanTopicText((userText || '') + ' ' + (aiText || ''), 240);
+                if (!text) return true;
+                if (/^(你好|您好|嗨|hi|hello|谢谢|感谢|ok|好的|好|嗯|行|可以|收到|明白|继续|再说|哈哈|hhhh|测试)[。！!,.，\s]*$/i.test(text)) {
+                    return true;
+                }
+                return text.length < 10 && !/(决定|待办|计划|错误|失败|完成|修复|删除|保存|新增|更新|结论|目标|规则)/.test(text);
+            }
+
+            function inferTopicGroup(userText, aiText) {
+                const text = cleanTopicText((userText || '') + ' ' + (aiText || ''), 360).toLowerCase();
+                const groups = [
+                    { name: '代码与调试', pattern: /代码|源码|函数|接口|报错|错误|bug|debug|调试|修复|实现|html|css|js|python|api|localstorage|server|测试|权限|sandbox|git/i },
+                    { name: '记忆系统', pattern: /记忆|长期|短期|波动|话题|节点|rawmessages|topic|summary|memory/i },
+                    { name: '任务计划', pattern: /计划|待办|下一步|安排|提醒|日程|deadline|todo|未完成|阻塞/i },
+                    { name: '设置与配置', pattern: /设置|配置|api key|模型|代理|自动保存|导入|导出|清理|开关/i },
+                    { name: '决策与规则', pattern: /决定|选择|采用|不要|必须|规则|目标|保留|压缩|合并|优先/i },
+                    { name: '写作与表达', pattern: /写|改写|文案|总结|摘要|翻译|润色|标题|邮件|消息/i },
+                    { name: '资料与学习', pattern: /解释|原理|为什么|区别|学习|教程|资料|概念|结论/i },
+                    { name: '生活与个人事项', pattern: /购物|费用|开销|预算|健康|吃|睡|家|旅行|宠物|朋友|工作/i },
+                ];
+                const matched = groups.find(group => group.pattern.test(text));
+                if (matched) return matched.name;
+
+                const source = cleanTopicText(userText, 42);
+                const phrase = source
+                    .replace(/^(请|帮我|帮忙|能不能|可以|麻烦|我要|我想|优化|实现|修复|解释)\s*/i, '')
+                    .replace(/[？?。！!,，；;:].*$/, '')
+                    .trim();
+                return phrase ? phrase.slice(0, 18) : '一般对话';
+            }
+
+            function summarizeTurnForTopic(userText, aiText) {
+                const user = cleanTopicText(userText, 96);
+                const ai = cleanTopicText(aiText, 120);
+                if (!ai) return user || '已记录一次话题互动';
+                if (!user) return ai;
+                return memorySystem._mergeContent('用户关注：' + user, '当前结果：' + ai).slice(0, 220);
+            }
+
+            function classifyTopicNode(userText, aiText, forcedType) {
+                const combined = cleanTopicText((userText || '') + ' ' + (aiText || ''), 360);
+                if (!combined || isLowValueTurn(userText, aiText)) return null;
+
+                const rules = [
+                    { type: 'error', label: '错误', pattern: /错误|失败|报错|异常|崩溃|无法|不能|拒绝访问|failed|error|exception|blocked/i },
+                    { type: 'todo', label: '待办', pattern: /待办|下一步|需要继续|未完成|稍后|之后|提醒|计划|todo|pending|blocked/i },
+                    { type: 'decision', label: '决策', pattern: /决定|选择|采用|不要|改为|改成|必须|保留|目标|规则|优先|最多|只记录|不要把/i },
+                    { type: 'state', label: '状态', pattern: /已完成|完成了|已修复|修复了|已新增|新增了|已删除|已保存|已导入|已导出|已清理|开启|关闭|更新为|接入/i },
+                    { type: 'conclusion', label: '结论', pattern: /结论|总结|最终|因此|所以|原因是|定位到|确认是|验证通过|测试通过/i },
+                    { type: 'explanation', label: '解释', pattern: /解释|原因|原理|区别|意味着|建议/i },
+                ];
+                const rule = forcedType
+                    ? rules.find(item => item.type === forcedType)
+                    : rules.find(item => item.pattern.test(combined));
+                if (!rule) return null;
+
+                const source = cleanTopicText(aiText, 150) || cleanTopicText(userText, 150);
+                if (!source) return null;
+                return {
+                    type: rule.type,
+                    label: rule.label,
+                    text: source,
+                    timestamp: Date.now(),
+                };
+            }
+
+            function normalizeTopicCard(card) {
+                const topicGroup = cleanTopicText(card && card.topicGroup, 48) || '一般对话';
+                const rawMessages = Array.isArray(card && card.rawMessages)
+                    ? card.rawMessages
+                        .filter(msg => msg && msg.role && msg.content)
+                        .map(msg => ({
+                            role: msg.role === 'assistant' ? 'assistant' : 'user',
+                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
+                            timestamp: msg.timestamp || Date.now(),
+                        }))
+                    : [];
+                const keyNodes = Array.isArray(card && card.keyNodes)
+                    ? card.keyNodes
+                        .filter(node => node && node.text)
+                        .map(node => ({
+                            type: node.type || 'conclusion',
+                            label: node.label || '结论',
+                            text: cleanTopicText(node.text, 180),
+                            timestamp: node.timestamp || Date.now(),
+                        }))
+                    : [];
+                return {
+                    topicGroup,
+                    latestSummary: cleanTopicText(card && card.latestSummary, 220) || '已聚合相关对话。',
+                    keyNodes: compressTopicNodes(keyNodes),
+                    rawMessages,
+                    messageCount: Number(card && card.messageCount) || rawMessages.length,
+                    lastUpdated: Number(card && card.lastUpdated) || Date.now(),
+                    status: card && card.status === 'failed' ? 'failed' : 'ok',
+                    failureReason: cleanTopicText(card && card.failureReason, 220),
+                    failureTime: Number(card && card.failureTime) || 0,
+                    retryId: card && card.retryId ? String(card.retryId) : '',
+                    rawOutput: card && card.rawOutput ? String(card.rawOutput).slice(0, 2000) : '',
+                };
+            }
+
+            function createTopicFailureCard(rawMessages, reason, rawOutput = '') {
+                const messages = Array.isArray(rawMessages)
+                    ? rawMessages
+                        .filter(msg => msg && msg.role && msg.content)
+                        .slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES)
+                        .map(msg => ({
+                            role: msg.role === 'assistant' ? 'assistant' : 'user',
+                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
+                            timestamp: msg.timestamp || Date.now(),
+                        }))
+                    : [];
+                const failureTime = Date.now();
+                return normalizeTopicCard({
+                    topicGroup: '整理失败待重试',
+                    latestSummary: '本批话题整理失败，原始消息已保留，稍后可重新整理。',
+                    keyNodes: [{
+                        type: 'error',
+                        label: '错误',
+                        text: reason || 'JSON 解析失败',
+                        timestamp: failureTime,
+                    }],
+                    rawMessages: messages,
+                    messageCount: messages.length,
+                    lastUpdated: failureTime,
+                    status: 'failed',
+                    failureReason: reason || 'JSON 解析失败',
+                    failureTime,
+                    retryId: 'topic-retry-' + failureTime + '-' + Math.random().toString(36).slice(2, 8),
+                    rawOutput,
+                });
+            }
+
+            function recordTopicOrganizeFailure(rawMessages, reason, rawOutput = '') {
+                const card = createTopicFailureCard(rawMessages, reason, rawOutput);
+                if (card.rawMessages.length === 0) return null;
+                topicCards.unshift(card);
+                topicCards = topicCards
+                    .map(normalizeTopicCard)
+                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                    .slice(0, TOPIC_CARD_LIMIT);
+                debugLog('[topic-organize] fallback failure topic created:', {
+                    reason,
+                    messageCount: card.messageCount,
+                    failureTime: card.failureTime,
+                    rawOutput,
+                });
+                return card;
+            }
+
+            function compressTopicNodes(nodes) {
+                const normalized = (nodes || []).filter(node => node && node.text);
+                const deduped = [];
+                normalized.forEach(node => {
+                    const existing = deduped.find(item =>
+                        item.type === node.type && memorySystem._similarity(item.text, node.text) > 0.74
+                    );
+                    if (existing) {
+                        existing.text = cleanTopicText(memorySystem._mergeContent(existing.text, node.text), 180);
+                        existing.timestamp = Math.max(existing.timestamp || 0, node.timestamp || 0);
+                    } else {
+                        deduped.push(node);
+                    }
+                });
+
+                while (deduped.length > MAX_TOPIC_KEY_NODES) {
+                    const mergeIndex = deduped.findIndex((node, index) =>
+                        index < deduped.length - 1 &&
+                        (node.type === 'explanation' || node.type === 'conclusion') &&
+                        (deduped[index + 1].type === 'explanation' || deduped[index + 1].type === 'conclusion')
+                    );
+                    if (mergeIndex >= 0) {
+                        const merged = {
+                            type: 'conclusion',
+                            label: '结论',
+                            text: cleanTopicText(memorySystem._mergeContent(deduped[mergeIndex].text, deduped[mergeIndex + 1].text), 180),
+                            timestamp: Math.max(deduped[mergeIndex].timestamp || 0, deduped[mergeIndex + 1].timestamp || 0),
+                        };
+                        deduped.splice(mergeIndex, 2, merged);
+                        continue;
+                    }
+
+                    const removableIndex = deduped.findIndex(node => !['decision', 'todo', 'error'].includes(node.type));
+                    if (removableIndex >= 0) {
+                        deduped.splice(removableIndex, 1);
+                    } else {
+                        deduped.splice(0, deduped.length - MAX_TOPIC_KEY_NODES);
+                    }
+                }
+                return deduped;
+            }
+
+            function findTopicCard(topicGroup, summaryText) {
+                let best = null;
+                let bestScore = 0;
+                topicCards.forEach(card => {
+                    if (card.topicGroup === topicGroup) {
+                        best = card;
+                        bestScore = 1;
+                        return;
+                    }
+                    const score = Math.max(
+                        memorySystem._similarity(card.topicGroup, topicGroup),
+                        memorySystem._similarity(card.latestSummary, summaryText)
+                    );
+                    if (score > bestScore) {
+                        best = card;
+                        bestScore = score;
+                    }
+                });
+                return bestScore >= 0.58 ? best : null;
+            }
+
+            function upsertTopicCardForTurn(userMsg, aiMsg, options = {}) {
+                const userText = userMsg && userMsg.content ? userMsg.content : '';
+                const aiText = aiMsg && aiMsg.content ? aiMsg.content : '';
+                if (isLowValueTurn(userText, aiText) && !options.force) return;
+
+                const topicGroup = options.topicGroup || inferTopicGroup(userText, aiText);
+                const summaryText = summarizeTurnForTopic(userText, aiText);
+                let card = findTopicCard(topicGroup, summaryText);
+                if (!card) {
+                    card = {
+                        topicGroup,
+                        latestSummary: summaryText,
+                        keyNodes: [],
+                        rawMessages: [],
+                        messageCount: 0,
+                        lastUpdated: Date.now(),
+                    };
+                    topicCards.push(card);
+                }
+
+                [userMsg, aiMsg].forEach(msg => {
+                    if (!msg || !msg.role || !msg.content) return;
+                    const timestamp = msg.timestamp || Date.now();
+                    const exists = card.rawMessages.some(existing =>
+                        existing.timestamp === timestamp &&
+                        existing.role === msg.role &&
+                        existing.content === msg.content
+                    );
+                    if (!exists) {
+                        card.rawMessages.push({
+                            role: msg.role === 'assistant' ? 'assistant' : 'user',
+                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
+                            timestamp,
+                        });
+                    }
+                });
+
+                card.latestSummary = cleanTopicText(memorySystem._mergeContent(card.latestSummary, summaryText), 220);
+                card.messageCount = card.rawMessages.length;
+                card.lastUpdated = Math.max(Date.now(), userMsg && userMsg.timestamp || 0, aiMsg && aiMsg.timestamp || 0);
+
+                const node = classifyTopicNode(userText, aiText, options.nodeType);
+                if (node) {
+                    const dup = card.keyNodes.find(existing =>
+                        existing.type === node.type && memorySystem._similarity(existing.text, node.text) > 0.72
+                    );
+                    if (dup) {
+                        dup.text = cleanTopicText(memorySystem._mergeContent(dup.text, node.text), 180);
+                        dup.timestamp = node.timestamp;
+                    } else {
+                        card.keyNodes.push(node);
+                    }
+                    card.keyNodes = compressTopicNodes(card.keyNodes);
+                }
+
+                topicCards = topicCards
+                    .map(normalizeTopicCard)
+                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                    .slice(0, TOPIC_CARD_LIMIT);
+            }
+
+            function organizeTopicMessagesBatch(messages, options = {}) {
+                const batch = Array.isArray(messages)
+                    ? messages.slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES)
+                    : [];
+                if (batch.length === 0) return 0;
+
+                let processed = 0;
+                try {
+                    for (let i = 0; i < batch.length; i++) {
+                        const current = batch[i];
+                        if (!current || current.role !== 'user') continue;
+                        const next = batch[i + 1] && batch[i + 1].role === 'assistant'
+                            ? batch[i + 1]
+                            : null;
+                        upsertTopicCardForTurn(current, next, {
+                            force: !!options.force,
+                            nodeType: options.nodeType,
+                        });
+                        processed += next ? 2 : 1;
+                    }
+                } catch (error) {
+                    const reason = error && error.message ? error.message : String(error || '话题整理失败');
+                    recordTopicOrganizeFailure(batch, reason, options.rawOutput || '');
+                    recordDebugError(reason, '话题整理失败');
+                }
+                return processed;
+            }
+
+            function rebuildTopicCardsFromHistory() {
+                topicCards = [];
+                for (let i = 0; i < conversationHistory.length; i += MAX_TOPIC_ORGANIZE_BATCH_MESSAGES) {
+                    organizeTopicMessagesBatch(
+                        conversationHistory.slice(i, i + MAX_TOPIC_ORGANIZE_BATCH_MESSAGES),
+                        { force: false }
+                    );
+                }
+            }
+
+            function retryFailedTopicCard(retryId) {
+                const index = topicCards.findIndex(card => card && card.retryId === retryId && card.status === 'failed');
+                if (index < 0) {
+                    showToast('没有找到可重试的话题');
+                    return;
+                }
+                const failedCard = normalizeTopicCard(topicCards[index]);
+                const rawMessages = failedCard.rawMessages.slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES);
+                topicCards.splice(index, 1);
+                organizeTopicMessagesBatch(rawMessages, { force: true, nodeType: 'conclusion' });
+                topicCards = topicCards
+                    .map(normalizeTopicCard)
+                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                    .slice(0, TOPIC_CARD_LIMIT);
+                persistChatHistory();
+                updateMemoryPanel();
+                showToast('已重新整理失败话题');
+            }
+
+            function mergeImportedTopicCards(importedCards) {
+                if (!Array.isArray(importedCards)) return 0;
+                let changed = 0;
+                importedCards.map(normalizeTopicCard).forEach(incoming => {
+                    const target = findTopicCard(incoming.topicGroup, incoming.latestSummary);
+                    if (!target) {
+                        topicCards.push(incoming);
+                        changed++;
+                        return;
+                    }
+                    target.latestSummary = cleanTopicText(memorySystem._mergeContent(target.latestSummary, incoming.latestSummary), 220);
+                    incoming.rawMessages.forEach(msg => {
+                        if (!target.rawMessages.some(existing =>
+                            existing.timestamp === msg.timestamp &&
+                            existing.role === msg.role &&
+                            existing.content === msg.content
+                        )) {
+                            target.rawMessages.push(msg);
+                            changed++;
+                        }
+                    });
+                    target.keyNodes = compressTopicNodes(target.keyNodes.concat(incoming.keyNodes));
+                    target.messageCount = target.rawMessages.length;
+                    target.lastUpdated = Math.max(target.lastUpdated || 0, incoming.lastUpdated || 0);
+                });
+                topicCards = topicCards
+                    .map(normalizeTopicCard)
+                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                    .slice(0, TOPIC_CARD_LIMIT);
+                return changed;
+            }
+
             function compactConversationHistory() {
                 if (conversationHistory.length <= MAX_STORED_CHAT_MESSAGES) return;
                 const overflowCount = conversationHistory.length - MAX_STORED_CHAT_MESSAGES;
@@ -2691,7 +3345,7 @@
                 const existing = conversationSummary
                     ? conversationSummary.split('\n').map(s => s.trim()).filter(Boolean)
                     : [];
-                conversationSummary = existing.concat(archived).slice(-MAX_SUMMARY_ITEMS).join('\n');
+                conversationSummary = mergeConversationSummaryLines(existing, archived).join('\n');
                 conversationHistory = conversationHistory.slice(overflowCount);
             }
 
@@ -3473,6 +4127,11 @@
                         content: localResponse,
                         timestamp: aiTimestamp,
                     });
+                    upsertTopicCardForTurn(userMsgForHistory, {
+                        role: 'assistant',
+                        content: localResponse,
+                        timestamp: aiTimestamp,
+                    }, { nodeType: localDeleteResult.deleted ? 'state' : 'conclusion' });
                     persistChatHistory();
                     isProcessing = false;
                     sendBtn.disabled = false;
@@ -3495,6 +4154,11 @@
                         content: localResponse,
                         timestamp: aiTimestamp,
                     });
+                    upsertTopicCardForTurn(userMsgForHistory, {
+                        role: 'assistant',
+                        content: localResponse,
+                        timestamp: aiTimestamp,
+                    }, { nodeType: localUpdateResult.updated ? 'state' : 'conclusion' });
                     persistChatHistory();
                     isProcessing = false;
                     sendBtn.disabled = false;
@@ -3573,6 +4237,15 @@
                         timestamp: aiTimestamp 
                     };
                     conversationHistory.push(aiMsgForHistory);
+                    if (parsedAiResponse.memoryParseError) {
+                        recordTopicOrganizeFailure(
+                            [userMsgForHistory, aiMsgForHistory],
+                            parsedAiResponse.memoryParseError,
+                            parsedAiResponse.memoryParseRaw || parsedAiResponse.raw
+                        );
+                    } else {
+                        organizeTopicMessagesBatch([userMsgForHistory, aiMsgForHistory]);
+                    }
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
                     const cleanResponse = cleanAiResponse;
@@ -3590,7 +4263,14 @@
                     const errorMsg = error.message || '未知错误';
                     recordDebugError(error, 'API调用失败');
                     setActiveFocus(focusTaskName, '发生错误', ['重复发送']);
-                    renderMessage('ai', '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。', null, { applyMemoryUpdate: true });
+                    const errorTimestamp = Date.now();
+                    const visibleError = '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。';
+                    renderMessage('ai', visibleError, errorTimestamp, { applyMemoryUpdate: true });
+                    upsertTopicCardForTurn(userMsgForHistory, {
+                        role: 'assistant',
+                        content: 'API调用失败：' + errorMsg,
+                        timestamp: errorTimestamp,
+                    }, { nodeType: 'error', force: true });
                     console.error('API调用失败:', error);
                 } finally {
                     isProcessing = false;
@@ -3599,6 +4279,7 @@
                     setThinkingState(false);
                     userInput.focus();
                     updateMemoryPanel();
+                    persistChatHistory();
                     setActiveFocus('空闲', '等待输入', []);
                 }
             }
@@ -3606,6 +4287,7 @@
             function clearChatHistory() {
                 conversationHistory = [];
                 conversationSummary = '';
+                topicCards = [];
                 messagesContainer.innerHTML = '';
                 try {
                     localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
@@ -3616,8 +4298,9 @@
                 try {
                     compactConversationHistory();
                     localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify({
-                        version: 2,
+                        version: 3,
                         summary: conversationSummary,
+                        topicCards,
                         messages: conversationHistory,
                     }));
                 } catch (e) { /* ignore */ }
@@ -3652,7 +4335,79 @@
                 if (!memShort || !memLong || !memVolatile) return;
 
                 if (sidebarStats) {
-                    sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条';
+                    sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条 · 话题 ' + topicCards.length + ' 个';
+                }
+
+                if (memTopics) {
+                    const cards = topicCards
+                        .map(normalizeTopicCard)
+                        .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                        .slice(0, 8);
+                    let topicHTML = '<h4><span class="dot dot-long"></span>话题卡片（' + topicCards.length + '个）</h4>';
+                    if (cards.length === 0) {
+                        topicHTML += '<div class="empty-hint">暂无高价值话题记录</div>';
+                    } else {
+                        cards.forEach(card => {
+                            const lastUpdated = card.lastUpdated
+                                ? new Date(card.lastUpdated).toLocaleString('zh-CN', {
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                })
+                                : '未知';
+                            const nodes = (card.keyNodes || []).slice(-MAX_TOPIC_KEY_NODES);
+                            const nodesHTML = nodes.length > 0
+                                ? '<ol class="topic-nodes">' + nodes.map(node =>
+                                    '<li><strong>' + escapeHTML(node.label || node.type || '节点') + '</strong> ' +
+                                    escapeHTML(node.text || '') + '</li>'
+                                ).join('') + '</ol>'
+                                : '<div class="empty-hint">暂无决策、待办、错误或结论节点</div>';
+                            const rawHTML = (card.rawMessages || []).map(msg => {
+                                const role = msg.role === 'assistant' ? 'AI' : '用户';
+                                const time = msg.timestamp
+                                    ? new Date(msg.timestamp).toLocaleString('zh-CN', {
+                                        month: '2-digit',
+                                        day: '2-digit',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                    })
+                                    : '';
+                                return '<div class="topic-raw-message"><span class="topic-raw-role">' +
+                                    escapeHTML(role + (time ? ' ' + time : '')) +
+                                    '</span>：' + escapeHTML(cleanTopicText(msg.content, 260)) + '</div>';
+                            }).join('');
+                            const isFailed = card.status === 'failed';
+                            const failureTime = card.failureTime
+                                ? new Date(card.failureTime).toLocaleString('zh-CN', {
+                                    month: '2-digit',
+                                    day: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                })
+                                : lastUpdated;
+                            const failureHTML = isFailed
+                                ? '<div class="topic-failure">' +
+                                    '<div><strong>失败原因</strong>：' + escapeHTML(card.failureReason || 'JSON 解析失败') + '</div>' +
+                                    '<div><strong>失败时间</strong>：' + escapeHTML(failureTime) + '</div>' +
+                                    '<div><strong>消息数量</strong>：' + escapeHTML(String(card.messageCount || 0)) + '</div>' +
+                                    '</div>' +
+                                    '<button type="button" class="topic-retry-btn" data-topic-retry="' +
+                                    encodeURIComponent(card.retryId || '') + '">重新整理失败话题</button>'
+                                : '';
+                            topicHTML += '<details class="topic-card' + (isFailed ? ' failed' : '') + '">' +
+                                '<summary>' +
+                                '<div class="topic-title">' + escapeHTML(card.topicGroup) + '</div>' +
+                                '<div class="topic-summary">' + escapeHTML(card.latestSummary) + '</div>' +
+                                '<div class="topic-meta">' + card.messageCount + ' 条消息 · ' + lastUpdated + '</div>' +
+                                '</summary>' +
+                                failureHTML +
+                                nodesHTML +
+                                '<div class="topic-raw">' + (rawHTML || '<div class="empty-hint">暂无原始消息</div>') + '</div>' +
+                                '</details>';
+                        });
+                    }
+                    memTopics.innerHTML = topicHTML;
                 }
 
                 const sevenDays = 7 * 24 * 60 * 60 * 1000;
@@ -3886,7 +4641,7 @@
             // ==================== 自动保存记忆 ====================
             function exportMemoryToFile() {
                 compactConversationHistory();
-                const data = memorySystem.exportData(conversationHistory, conversationSummary);
+                const data = memorySystem.exportData(conversationHistory, conversationSummary, topicCards);
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
             }
@@ -3933,7 +4688,7 @@
 
             btnExportMem.addEventListener('click', function() {
                 compactConversationHistory();
-                const data = memorySystem.exportData(conversationHistory, conversationSummary);
+                const data = memorySystem.exportData(conversationHistory, conversationSummary, topicCards);
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
                 showToast('记忆已导出');
@@ -3956,8 +4711,10 @@
                         let shortImported = 0;
                         let longImported = 0;
                         let volatileImported = 0;
+                        let topicImported = 0;
                         let hasChatChanges = false;
                         let hasSummaryChanges = false;
+                        let hasTopicChanges = false;
 
                         if (imported.chatSummary && typeof imported.chatSummary === 'string') {
                             const existingSummary = conversationSummary
@@ -4002,10 +4759,19 @@
                             
                             if (chatImported > 0 || hasOverlappingTimestamps) {
                                 conversationHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-                                persistChatHistory();
+                                for (let i = 0; i < conversationHistory.length; i += MAX_TOPIC_ORGANIZE_BATCH_MESSAGES) {
+                                    organizeTopicMessagesBatch(
+                                        conversationHistory.slice(i, i + MAX_TOPIC_ORGANIZE_BATCH_MESSAGES),
+                                        { force: false }
+                                    );
+                                }
                                 hasChatChanges = true;
+                                hasTopicChanges = true;
                             }
                         }
+
+                        topicImported = mergeImportedTopicCards(imported.topicCards);
+                        hasTopicChanges = hasTopicChanges || topicImported > 0;
 
                         if (imported.shortTerm && imported.shortTerm.entries) {
                             const existingShort = new Set(memorySystem.shortTerm.entries.map(e => e.content));
@@ -4145,7 +4911,7 @@
                             }
                         }
 
-                        if (hasChatChanges || hasSummaryChanges) {
+                        if (hasChatChanges || hasSummaryChanges || hasTopicChanges) {
                             persistChatHistory();
                         }
                         memorySystem._saveAll();
@@ -4166,7 +4932,8 @@
                         if (shortImported > 0) msg += `短期${shortImported}条、`;
                         if (longImported > 0) msg += `长期${longImported}条、`;
                         if (volatileImported > 0) msg += `波动${volatileImported}条、`;
-                        if (chatImported === 0 && shortImported === 0 && longImported === 0 && volatileImported === 0) {
+                        if (topicImported > 0) msg += `话题${topicImported}条、`;
+                        if (chatImported === 0 && shortImported === 0 && longImported === 0 && volatileImported === 0 && topicImported === 0) {
                             msg = '未导入新数据（可能已存在或格式无效）';
                         } else {
                             msg = msg.replace(/、$/, '');
@@ -4232,6 +4999,16 @@
 
             sendBtn.addEventListener('click', sendMessage);
             window.addEventListener('aether-memory-updated', updateMemoryPanel);
+            if (memTopics) {
+                memTopics.addEventListener('click', (event) => {
+                    const retryButton = event.target && event.target.closest
+                        ? event.target.closest('[data-topic-retry]')
+                        : null;
+                    if (!retryButton) return;
+                    event.preventDefault();
+                    retryFailedTopicCard(decodeURIComponent(retryButton.dataset.topicRetry || ''));
+                });
+            }
 
             // ==================== 初始化 ====================
             function init() {
@@ -4246,23 +5023,33 @@
                 try {
                     const cached = localStorage.getItem(STORAGE_KEYS.CHAT_HISTORY);
                     if (cached) {
-                        const parsed = JSON.parse(cached);
-                        if (Array.isArray(parsed) && parsed.length > 0) {
-                            conversationHistory = parsed;
-                        } else if (parsed && Array.isArray(parsed.messages)) {
-                            conversationHistory = parsed.messages;
-                            conversationSummary = typeof parsed.summary === 'string' ? parsed.summary : '';
-                        }
-                        if (conversationHistory.length > 0) {
-                            compactConversationHistory();
-                            // 渲染缓存的对话
-                            conversationHistory.forEach(msg => {
-                                if (msg.role === 'user' || msg.role === 'assistant') {
-                                    const role = msg.role === 'assistant' ? 'ai' : 'user';
-                                    renderMessage(role, msg.content, msg.timestamp);
-                                }
-                            });
-                            persistChatHistory();
+                        const parsedResult = safeJsonParse(cached, null, 'CHAT_HISTORY');
+                        if (!parsedResult.ok) {
+                            recordDebugError(parsedResult.error, '历史对话读取失败');
+                        } else {
+                            const parsed = parsedResult.value;
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                conversationHistory = parsed;
+                                topicCards = [];
+                            } else if (parsed && Array.isArray(parsed.messages)) {
+                                conversationHistory = parsed.messages;
+                                conversationSummary = typeof parsed.summary === 'string' ? parsed.summary : '';
+                                topicCards = Array.isArray(parsed.topicCards)
+                                    ? parsed.topicCards.map(normalizeTopicCard)
+                                    : [];
+                            }
+                            if (conversationHistory.length > 0) {
+                                if (topicCards.length === 0) rebuildTopicCardsFromHistory();
+                                compactConversationHistory();
+                                // 渲染缓存的对话
+                                conversationHistory.forEach(msg => {
+                                    if (msg.role === 'user' || msg.role === 'assistant') {
+                                        const role = msg.role === 'assistant' ? 'ai' : 'user';
+                                        renderMessage(role, msg.content, msg.timestamp);
+                                    }
+                                });
+                                persistChatHistory();
+                            }
                         }
                     }
                 } catch (e) { /* ignore */ }
@@ -4280,6 +5067,7 @@
                 debugLog('🧠 AI记忆聊天系统已就绪');
                 debugLog('  - 最近对话:', conversationHistory.length, '/', MAX_STORED_CHAT_MESSAGES, '条');
                 debugLog('  - 历史摘要:', conversationSummary ? conversationSummary.split('\n').length : 0, '条');
+                debugLog('  - 话题卡片:', topicCards.length, '个');
                 debugLog('  - 短期记忆:', memorySystem.shortTerm.entries.length, '/', MAX_SHORT_TERM_ENTRIES, '条');
                 debugLog('  - 长期记忆:', countLongTermEntries(), '条');
                 debugLog('  - 波动记忆:', countVolatileEntries(), '条');
@@ -4328,6 +5116,8 @@
                 getSelectedMemory: () => selectedMemory,
                 clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
+                getTopicCards: () => topicCards,
+                rebuildTopicCardsFromHistory,
                 getActiveFocus: () => activeFocus,
                 refreshDebugPanel,
             };
