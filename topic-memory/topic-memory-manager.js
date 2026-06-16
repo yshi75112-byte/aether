@@ -57,6 +57,13 @@
         }
     }
 
+    function isJSONParseError(error) {
+        return error instanceof SyntaxError ||
+            /JSON|array element|Unexpected token|Expected/i.test(
+                error && error.message ? error.message : String(error)
+            );
+    }
+
     function compactTopic(topic) {
         return {
             id: topic.id,
@@ -83,6 +90,7 @@
             this.onChange = options.onChange || (() => {});
             this.debounceMs = options.debounceMs || 1600;
             this.maxContextMessages = options.maxContextMessages || 120;
+            this.maxBatchMessages = options.maxBatchMessages || 32;
             this.maxTopics = options.maxTopics || 60;
             this.timer = null;
             this.processing = false;
@@ -218,34 +226,72 @@
             }
 
             const startIndex = this.findStartIndex(messages);
-            const newMessages = messages.slice(startIndex);
-            if (newMessages.length === 0) {
+            const pendingMessages = messages.slice(startIndex);
+            if (pendingMessages.length === 0) {
                 this.state.pendingCount = 0;
                 this.setStatus('idle', '没有新消息需要整理');
                 return;
             }
 
             this.processing = true;
-            this.state.pendingCount = newMessages.length;
-            this.setStatus('processing', `正在整理 ${newMessages.length} 条消息`);
+            this.state.pendingCount = pendingMessages.length;
+            this.setStatus('processing', `正在整理 ${pendingMessages.length} 条消息`);
 
             try {
-                const response = await this.callApi(this.buildPrompt(messages, newMessages));
-                const parsed = extractJSON(response);
-                this.applyModelResult(parsed, messages);
+                let processedCount = 0;
+                for (let offset = 0; offset < pendingMessages.length; offset += this.maxBatchMessages) {
+                    const batch = pendingMessages.slice(offset, offset + this.maxBatchMessages);
+                    const batchEnd = startIndex + offset + batch.length;
+                    const context = messages.slice(
+                        Math.max(0, batchEnd - this.maxContextMessages),
+                        batchEnd
+                    );
+                    const batchProcessed = await this.processBatch(context, batch);
+                    processedCount += batchProcessed;
+                    this.state.pendingCount = Math.max(0, pendingMessages.length - processedCount);
+                    this.setStatus(
+                        'processing',
+                        `正在整理 ${pendingMessages.length} 条消息（已完成 ${processedCount} 条）`
+                    );
+                }
                 this.state.pendingCount = 0;
                 this.state.lastError = '';
                 this.state.lastRun = {
                     at: Date.now(),
-                    processed: newMessages.length,
+                    processed: pendingMessages.length,
                     topics: this.state.topics.length,
                 };
-                this.setStatus('idle', `完成整理 ${newMessages.length} 条消息`);
+                this.setStatus('idle', `完成整理 ${pendingMessages.length} 条消息`);
             } catch (error) {
                 this.state.lastError = error && error.message ? error.message : String(error);
                 this.setStatus('error', '整理失败：' + this.state.lastError);
             } finally {
                 this.processing = false;
+            }
+        }
+
+        async processBatch(contextMessages, batchMessages) {
+            try {
+                const response = await this.callApi(this.buildPrompt(contextMessages, batchMessages));
+                const parsed = extractJSON(response);
+                this.applyModelResult(parsed, contextMessages);
+                return batchMessages.length;
+            } catch (error) {
+                if (!isJSONParseError(error) || batchMessages.length <= 8) {
+                    throw error;
+                }
+
+                const midpoint = Math.ceil(batchMessages.length / 2);
+                const firstBatch = batchMessages.slice(0, midpoint);
+                const secondBatch = batchMessages.slice(midpoint);
+                const firstLastId = firstBatch[firstBatch.length - 1].id;
+                const firstEnd = contextMessages.findIndex(msg => msg.id === firstLastId) + 1;
+                if (firstEnd <= 0) throw error;
+
+                const firstContext = contextMessages.slice(0, firstEnd);
+                const firstCount = await this.processBatch(firstContext, firstBatch);
+                const secondCount = await this.processBatch(contextMessages, secondBatch);
+                return firstCount + secondCount;
             }
         }
 
@@ -264,8 +310,11 @@
                         '不要保存完整消息内容，只能引用 messageIds。',
                         '每个 chain 节点只写概述标签，不写时间；节点顺序代表因果时间顺序。',
                         '如果消息属于测试、纠错、计划、偏好、工具问题等，请给出简短明确的 title。',
+                        'title 和 label 必须简短，避免引号、换行和列表符号。',
+                        '最多返回 8 个 topics；每个 topic 最多 6 个 chain 节点。',
                         '输出 schema：{"topics":[{"id":"topic_x","title":"话题名","startTime":毫秒时间戳,"updatedAt":毫秒时间戳,"messageIds":["msg"],"chain":[{"id":"node_x","label":"概述","messageIds":["msg"]}]}],"marker":{"lastProcessedMessageId":"msg","lastProcessedAt":毫秒时间戳}}',
                         '可以复用已有 topic/node id；新建 id 用 topic_ 或 node_ 开头。',
+                        '必须返回合法 JSON：所有数组元素之间必须有逗号，字符串必须用双引号并正确转义。',
                     ].join('\n'),
                 },
                 {
