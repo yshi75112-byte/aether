@@ -2493,21 +2493,9 @@
                     };
                 }
 
-                /** 从 AI 回复文本中解析并应用 MEMORY_UPDATE 标记 */
+                /** 兼容旧调用：只解析 MEMORY_UPDATE，不写入 memory */
                 parseMemoryUpdate(content) {
-                    if (!content) return;
-                    const match = content.match(/<!--\s*MEMORY_UPDATE\s*:\s*([\s\S]*?)\s*-->/i);
-                    if (!match) return this.parseVisibleMemoryUpdate(content);
-                    const parsed = safeJsonParse(match[1].trim(), null, 'MemorySystem.parseMemoryUpdate');
-                    if (parsed.ok) {
-                        const memData = parsed.value;
-                        debugLog('📌 检测到记忆更新标记');
-                        this._applyMemoryData(memData);
-                        window.dispatchEvent(new CustomEvent('aether-memory-updated'));
-                    } else {
-                        console.warn('⚠ 记忆更新 JSON 解析失败:', parsed.error, match[1].substring(0, 120));
-                        recordDebugError(parsed.error, '记忆更新 JSON 解析失败');
-                    }
+                    return extractMemoryUpdatePayload(content);
                 }
 
                 _applyMemoryData(memData) {
@@ -3882,12 +3870,7 @@
             function recordTopicOrganizeFailure(rawMessages, reason, rawOutput = '') {
                 const card = createTopicFailureCard(rawMessages, reason, rawOutput);
                 if (card.rawMessages.length === 0) return null;
-                topicCards.unshift(card);
-                topicCards = topicCards
-                    .map(normalizeTopicCard)
-                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                    .slice(0, TOPIC_CARD_LIMIT);
-                debugLog('[topic-organize] fallback failure topic created:', {
+                debugLog('[topic-organize] local topic card write disabled:', {
                     reason,
                     messageCount: card.messageCount,
                     failureTime: card.failureTime,
@@ -3960,153 +3943,23 @@
             }
 
             function upsertTopicCardForTurn(userMsg, aiMsg, options = {}) {
-                const userText = userMsg && userMsg.content ? userMsg.content : '';
-                const aiText = aiMsg && aiMsg.content ? aiMsg.content : '';
-                if (isLowValueTurn(userText, aiText) && !options.force) return;
-
-                const topicGroup = options.topicGroup || inferTopicGroup(userText, aiText);
-                const summaryText = summarizeTurnForTopic(userText, aiText);
-                let card = findTopicCard(topicGroup, summaryText);
-                if (!card) {
-                    card = {
-                        topicGroup,
-                        latestSummary: summaryText,
-                        keyNodes: [],
-                        rawMessages: [],
-                        messageCount: 0,
-                        lastUpdated: Date.now(),
-                    };
-                    topicCards.push(card);
-                }
-
-                [userMsg, aiMsg].forEach(msg => {
-                    if (!msg || !msg.role || !msg.content) return;
-                    const timestamp = msg.timestamp || Date.now();
-                    const exists = card.rawMessages.some(existing =>
-                        existing.timestamp === timestamp &&
-                        existing.role === msg.role &&
-                        existing.content === msg.content
-                    );
-                    if (!exists) {
-                        card.rawMessages.push({
-                            role: msg.role === 'assistant' ? 'assistant' : 'user',
-                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
-                            timestamp,
-                        });
-                    }
-                });
-
-                card.latestSummary = cleanTopicText(memorySystem._mergeContent(card.latestSummary, summaryText), 220);
-                card.messageCount = card.rawMessages.length;
-                card.lastUpdated = Math.max(Date.now(), userMsg && userMsg.timestamp || 0, aiMsg && aiMsg.timestamp || 0);
-
-                const node = classifyTopicNode(userText, aiText, options.nodeType);
-                if (node) {
-                    const dup = card.keyNodes.find(existing =>
-                        existing.type === node.type && memorySystem._similarity(existing.text, node.text) > 0.72
-                    );
-                    if (dup) {
-                        dup.text = cleanTopicText(memorySystem._mergeContent(dup.text, node.text), 180);
-                        dup.timestamp = node.timestamp;
-                    } else {
-                        card.keyNodes.push(node);
-                    }
-                    card.keyNodes = compressTopicNodes(card.keyNodes);
-                }
-
-                topicCards = topicCards
-                    .map(normalizeTopicCard)
-                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                    .slice(0, TOPIC_CARD_LIMIT);
+                debugLog('[topic-organize] local topic card write disabled');
             }
 
             function organizeTopicMessagesBatch(messages, options = {}) {
-                const batch = Array.isArray(messages)
-                    ? messages.slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES)
-                    : [];
-                if (batch.length === 0) return 0;
-
-                let processed = 0;
-                try {
-                    for (let i = 0; i < batch.length; i++) {
-                        const current = batch[i];
-                        if (!current || current.role !== 'user') continue;
-                        const next = batch[i + 1] && batch[i + 1].role === 'assistant'
-                            ? batch[i + 1]
-                            : null;
-                        upsertTopicCardForTurn(current, next, {
-                            force: !!options.force,
-                            nodeType: options.nodeType,
-                        });
-                        processed += next ? 2 : 1;
-                    }
-                } catch (error) {
-                    const reason = error && error.message ? error.message : String(error || '话题整理失败');
-                    recordTopicOrganizeFailure(batch, reason, options.rawOutput || '');
-                    recordDebugError(reason, '话题整理失败');
-                }
-                return processed;
+                return 0;
             }
 
             function rebuildTopicCardsFromHistory() {
-                topicCards = [];
-                for (let i = 0; i < conversationHistory.length; i += MAX_TOPIC_ORGANIZE_BATCH_MESSAGES) {
-                    organizeTopicMessagesBatch(
-                        conversationHistory.slice(i, i + MAX_TOPIC_ORGANIZE_BATCH_MESSAGES),
-                        { force: false }
-                    );
-                }
+                return 0;
             }
 
             function retryFailedTopicCard(retryId) {
-                const index = topicCards.findIndex(card => card && card.retryId === retryId && card.status === 'failed');
-                if (index < 0) {
-                    showToast('没有找到可重试的话题');
-                    return;
-                }
-                const failedCard = normalizeTopicCard(topicCards[index]);
-                const rawMessages = failedCard.rawMessages.slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES);
-                topicCards.splice(index, 1);
-                organizeTopicMessagesBatch(rawMessages, { force: true, nodeType: 'conclusion' });
-                topicCards = topicCards
-                    .map(normalizeTopicCard)
-                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                    .slice(0, TOPIC_CARD_LIMIT);
-                persistChatHistory();
-                updateMemoryPanel();
-                showToast('已重新整理失败话题');
+                showToast('本地话题卡片已停用，请使用异步话题索引');
             }
 
             function mergeImportedTopicCards(importedCards) {
-                if (!Array.isArray(importedCards)) return 0;
-                let changed = 0;
-                importedCards.map(normalizeTopicCard).forEach(incoming => {
-                    const target = findTopicCard(incoming.topicGroup, incoming.latestSummary);
-                    if (!target) {
-                        topicCards.push(incoming);
-                        changed++;
-                        return;
-                    }
-                    target.latestSummary = cleanTopicText(memorySystem._mergeContent(target.latestSummary, incoming.latestSummary), 220);
-                    incoming.rawMessages.forEach(msg => {
-                        if (!target.rawMessages.some(existing =>
-                            existing.timestamp === msg.timestamp &&
-                            existing.role === msg.role &&
-                            existing.content === msg.content
-                        )) {
-                            target.rawMessages.push(msg);
-                            changed++;
-                        }
-                    });
-                    target.keyNodes = compressTopicNodes(target.keyNodes.concat(incoming.keyNodes));
-                    target.messageCount = target.rawMessages.length;
-                    target.lastUpdated = Math.max(target.lastUpdated || 0, incoming.lastUpdated || 0);
-                });
-                topicCards = topicCards
-                    .map(normalizeTopicCard)
-                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                    .slice(0, TOPIC_CARD_LIMIT);
-                return changed;
+                return 0;
             }
 
             function compactConversationHistory() {
@@ -4146,7 +3999,7 @@
 
             // ==================== 处理记忆更新指令 ====================
             function processMemoryUpdate(memData) {
-                memorySystem._applyMemoryData(memData);
+                return memorySystem._applyMemoryData(memData);
             }
 
             function updateStateEngineForTurn(userMsg, aiMsg) {
@@ -4164,12 +4017,6 @@
             function commitTurnClosedLoop(userMsg, aiMsg, options = {}) {
                 const userMessage = ensureConversationMessageId(userMsg);
                 const aiMessage = aiMsg ? ensureConversationMessageId(aiMsg) : null;
-                const pair = [userMessage, aiMessage].filter(Boolean);
-                const topicOptions = options.topicOptions || {};
-
-                if (options.organizeTopic !== false && userMessage) {
-                    organizeTopicMessagesBatch(pair, topicOptions);
-                }
 
                 if (options.updateState !== false && userMessage) {
                     updateStateEngineForTurn(userMessage, aiMessage);
@@ -4343,6 +4190,10 @@
             }
 
             function applyLocalDeleteIntent(userText) {
+                if (hasExplicitLocalDeleteIntent(userText) || hasLocalDeleteTarget(userText)) {
+                    showToast('记忆删除将由 AI 回复中的 MEMORY_UPDATE 处理');
+                    return { handled: false, deleted: false, reason: 'memory-write-disabled' };
+                }
                 if (!hasLocalDeleteTarget(userText)) {
                     return { handled: false, deleted: false, reason: 'missing-delete-target' };
                 }
@@ -4442,23 +4293,8 @@
                 }
 
                 const type = inferSaveMemoryType(userText, target);
-                if (type === 'shortTerm') {
-                    memorySystem.addShortTerm(target, 'local_intent');
-                } else if (type === 'longTerm') {
-                    if (/喜好|偏好/.test(userText)) {
-                        memorySystem.addPreference('通用', target);
-                    } else {
-                        memorySystem.addLongTermFact('用户记录', target);
-                    }
-                } else if (type === 'plan') {
-                    memorySystem.addPlan(/todo|待办/i.test(userText) ? '待办' : '其他', target);
-                } else {
-                    memorySystem.addTemporaryEvent(target, futureExpiry(3));
-                }
-
-                updateMemoryPanel();
-                showToast('已存入记忆：' + target);
-                return { handled: true, saved: true, target, type };
+                showToast('记忆写入将由 AI 回复中的 MEMORY_UPDATE 处理');
+                return { handled: false, saved: false, target, type, reason: 'memory-write-disabled' };
             }
 
             function looksLikeSelectedMemoryUpdateRequest(text) {
@@ -4480,6 +4316,8 @@
                 if (!looksLikeSelectedMemoryUpdateRequest(userText)) {
                     return { handled: false, updated: false, reason: 'no-update-intent' };
                 }
+                showToast('记忆修改将由 AI 回复中的 MEMORY_UPDATE 处理');
+                return { handled: false, updated: false, reason: 'memory-write-disabled' };
                 if (!selectedMemory || !selectedMemory.target) {
                     const message = '请先在左侧记忆面板选中要修改的记忆。';
                     showToast(message);
@@ -5064,8 +4902,7 @@
                     ? { handled: false }
                     : applyLocalSaveIntent(userText);
                 if (!localUpdateResult.handled && !localDeleteResult.handled && !localSaveResult.handled) {
-                    // 也在短期记忆中记录
-                    memorySystem.addShortTerm(userText, 'user_message');
+                    // Memory writes are intentionally limited to API MEMORY_UPDATE.
                 }
 
                 // 清空输入
@@ -5220,15 +5057,7 @@
                         );
                     }
 
-                    // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
-                    const cleanResponse = cleanAiResponse;
-                    const memPayload = parsedAiResponse.memoryData;
-                    const hasShortTermUpdate = memPayload && memPayload.shortTerm &&
-                        (Array.isArray(memPayload.shortTerm) ? memPayload.shortTerm.length > 0 : !!memPayload.shortTerm);
-                    if (cleanResponse.length > 10 && !hasShortTermUpdate) {
-                        memorySystem.addShortTerm('AI回复要点: ' + cleanResponse.substring(0, 200),
-                        'ai_response');
-                    }
+                    // AI response summaries are not written directly; only MEMORY_UPDATE may write memory.
 
                     commitTurnClosedLoop(userMsgForHistory, aiMsgForHistory, {
                         stage: parsedAiResponse.memoryParseError ? 'api-turn-memory-parse-warning' : 'api-turn',
@@ -5281,9 +5110,6 @@
                     normalizeConversationHistoryIds();
                     compactConversationHistory();
                     localStorage.setItem(STORAGE_KEYS.CHAT_HISTORY, JSON.stringify({
-                        version: 3,
-                        summary: conversationSummary,
-                        topicCards,
                         messages: conversationHistory,
                     }));
                 } catch (e) { /* ignore */ }
@@ -6166,13 +5992,10 @@
                                 topicCards = [];
                             } else if (parsed && Array.isArray(parsed.messages)) {
                                 conversationHistory = parsed.messages;
-                                conversationSummary = typeof parsed.summary === 'string' ? parsed.summary : '';
-                                topicCards = Array.isArray(parsed.topicCards)
-                                    ? parsed.topicCards.map(normalizeTopicCard)
-                                    : [];
+                                conversationSummary = '';
+                                topicCards = [];
                             }
                             if (conversationHistory.length > 0) {
-                                if (topicCards.length === 0) rebuildTopicCardsFromHistory();
                                 normalizeConversationHistoryIds();
                                 compactConversationHistory();
                                 // 渲染缓存的对话
