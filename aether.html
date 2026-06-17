@@ -110,6 +110,7 @@
             width: 0;
             transform: translateX(-100%);
             border-right: none;
+            pointer-events: none;
         }
         @media (max-width: 768px) {
             .sidebar {
@@ -1486,6 +1487,8 @@
                 lastMemoryPanelRenderAt: null,
                 lastMemorySaveAt: null,
                 lastMemorySaveSnapshot: null,
+                lastSelfCheckAt: null,
+                selfCheckLog: [],
                 lastError: '',
             };
             const activeFocus = {
@@ -1573,6 +1576,30 @@
 
             function debugLog(...args) {
                 if (DEBUG_LOGS) console.log(...args);
+            }
+
+            function writeRuntimeSelfCheck(stage, checks = {}, level = 'info') {
+                const normalizedChecks = checks && typeof checks === 'object' ? checks : { detail: checks };
+                const failedKeys = Object.keys(normalizedChecks).filter(key => normalizedChecks[key] === false);
+                const entry = {
+                    at: Date.now(),
+                    stage,
+                    ok: failedKeys.length === 0,
+                    failedKeys,
+                    checks: normalizedChecks,
+                };
+                debugState.lastSelfCheckAt = entry.at;
+                debugState.selfCheckLog = [entry].concat(debugState.selfCheckLog || []).slice(0, 12);
+
+                const logMethod = entry.ok && level !== 'warn' ? 'info' : 'warn';
+                const payload = {
+                    stage: entry.stage,
+                    ok: entry.ok,
+                    failedKeys: entry.failedKeys,
+                    checks: entry.checks,
+                };
+                console[logMethod]('[Aether self-check]', payload);
+                return entry;
             }
 
             function safeJsonParse(raw, fallbackValue = null, label = 'JSON') {
@@ -2727,7 +2754,23 @@
                 callApi: callDeepSeekAPI,
                 hasApiKey: () => !!loadSettings().apiKey,
                 isBusy: () => isProcessing,
-                onChange: () => setTimeout(renderTopicMemoryPanel, 0),
+                onChange: (state) => {
+                    setTimeout(renderTopicMemoryPanel, 0);
+                    setTimeout(() => {
+                        const topicState = state || (topicMemoryManager ? topicMemoryManager.getState() : null);
+                        const status = topicState && topicState.status ? topicState.status : {};
+                        writeRuntimeSelfCheck('topic-index-change', {
+                            topicIndexReady: !!topicState,
+                            phase: status.phase || 'unknown',
+                            pendingCount: topicState ? (topicState.pendingCount || 0) : 0,
+                            indexedTopics: topicState && Array.isArray(topicState.topics) ? topicState.topics.length : 0,
+                            topicReadable: !topicState ||
+                                !Array.isArray(topicState.topics) ||
+                                topicState.topics.length === 0 ||
+                                getTopicMemorySummary() !== '',
+                        }, status.phase === 'error' ? 'warn' : 'info');
+                    }, 0);
+                },
             }) : null;
 
             // ==================== 状态感知引擎 V2 ====================
@@ -3149,11 +3192,22 @@
             }
 
             function getTopicMemorySummary() {
-                if (!topicMemoryManager) return '';
-                const state = topicMemoryManager.getState();
-                const topics = Array.isArray(state.topics) ? state.topics.slice(-8) : [];
-                if (topics.length === 0) return '';
-                return topics.map(topic => {
+                const localTopics = (topicCards || [])
+                    .map(normalizeTopicCard)
+                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
+                    .slice(0, 8)
+                    .map(card => {
+                        const nodes = (card.keyNodes || [])
+                            .slice(-MAX_TOPIC_KEY_NODES)
+                            .map(node => [node.label || node.type, node.text].filter(Boolean).join(': '))
+                            .filter(Boolean)
+                            .join(' -> ');
+                        return `- ${card.topicGroup || '未命名话题'}：${card.latestSummary || '暂无摘要'}${nodes ? '；节点：' + nodes : ''}`;
+                    });
+
+                const state = topicMemoryManager ? topicMemoryManager.getState() : null;
+                const indexedTopics = state && Array.isArray(state.topics) ? state.topics.slice(-8) : [];
+                const indexedSummary = indexedTopics.map(topic => {
                     const chain = (topic.chain || [])
                         .map(node => node.label)
                         .filter(Boolean)
@@ -3168,7 +3222,12 @@
                         })
                         : '未知时间';
                     return `- ${topic.title || '未命名话题'}（${start}）：${chain || '暂无因果链'}`;
-                }).join('\n');
+                });
+
+                const sections = [];
+                if (localTopics.length) sections.push('本地话题卡片：\n' + localTopics.join('\n'));
+                if (indexedSummary.length) sections.push('异步话题索引：\n' + indexedSummary.join('\n'));
+                return sections.join('\n');
             }
 
             // ==================== 可视化诊断状态 ====================
@@ -3341,7 +3400,7 @@
                 }
                 if (debugLastRender) {
                     debugLastRender.textContent =
-                        `消息 ${formatDebugTime(debugState.lastRenderAt)}；记忆面板 ${formatDebugTime(debugState.lastMemoryPanelRenderAt)}；保存 ${formatDebugTime(debugState.lastMemorySaveAt)}`;
+                        `消息 ${formatDebugTime(debugState.lastRenderAt)}；记忆面板 ${formatDebugTime(debugState.lastMemoryPanelRenderAt)}；保存 ${formatDebugTime(debugState.lastMemorySaveAt)}；自检 ${formatDebugTime(debugState.lastSelfCheckAt)}`;
                 }
                 if (debugLastError) debugLastError.textContent = debugState.lastError || '暂无';
                 if (debugStoragePreview) {
@@ -3349,6 +3408,7 @@
                         activeFocus,
                         memoryStorageSynced: storage.isRuntimeStorageSynced,
                         lastMemorySaveSnapshot: debugState.lastMemorySaveSnapshot,
+                        selfCheckLog: debugState.selfCheckLog,
                         localStorage: storage.preview,
                         temporaryEvent: directTempEvent,
                         temporaryEvents: Array.isArray(directTempEvents) ? directTempEvents.slice(-5) : directTempEvents,
@@ -4098,6 +4158,53 @@
                 } catch (error) {
                     console.warn('状态引擎更新失败:', error);
                     recordDebugError(error, '状态引擎更新失败');
+                }
+            }
+
+            function commitTurnClosedLoop(userMsg, aiMsg, options = {}) {
+                const userMessage = ensureConversationMessageId(userMsg);
+                const aiMessage = aiMsg ? ensureConversationMessageId(aiMsg) : null;
+                const pair = [userMessage, aiMessage].filter(Boolean);
+                const topicOptions = options.topicOptions || {};
+
+                if (options.organizeTopic !== false && userMessage) {
+                    organizeTopicMessagesBatch(pair, topicOptions);
+                }
+
+                if (options.updateState !== false && userMessage) {
+                    updateStateEngineForTurn(userMessage, aiMessage);
+                }
+
+                normalizeConversationHistoryIds();
+                compactConversationHistory();
+                persistChatHistory();
+                updateMemoryPanel();
+
+                const storage = summarizeMemoryStorage();
+                const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
+                return writeRuntimeSelfCheck(options.stage || 'turn-closed-loop', {
+                    hasUserMessage: !!userMessage,
+                    assistantMessageHandled: options.expectAssistant === false || !!aiMessage,
+                    memoryRuntimeStorageSynced: storage.isRuntimeStorageSynced,
+                    localTopicCards: topicCards.length,
+                    topicIndexLoaded: !topicMemoryManager || !!topicState,
+                    topicIndexPending: topicState ? (topicState.pendingCount || 0) : 0,
+                    chatHistoryPersisted: !!safeParseStorage(STORAGE_KEYS.CHAT_HISTORY).raw,
+                    memoryReadable: memorySystem.getMemorySummary() !== '',
+                    topicReadable: topicCards.length === 0 || getTopicMemorySummary() !== '',
+                }, options.warn ? 'warn' : 'info');
+            }
+
+            function restoreInputAfterProcessing(options = {}) {
+                isProcessing = false;
+                sendBtn.disabled = false;
+                userInput.disabled = false;
+                setThinkingState(false);
+                syncAppHeight();
+                if (options.focus !== false && !isMobileViewport()) {
+                    userInput.focus();
+                } else if (isMobileViewport() && document.activeElement === userInput) {
+                    userInput.blur();
                 }
             }
 
@@ -4982,18 +5089,12 @@
                         messageId: aiMsgForHistory.id,
                     });
                     conversationHistory.push(aiMsgForHistory);
-                    upsertTopicCardForTurn(userMsgForHistory, aiMsgForHistory, {
-                        nodeType: localDeleteResult.deleted ? 'state' : 'conclusion',
+                    commitTurnClosedLoop(userMsgForHistory, aiMsgForHistory, {
+                        stage: 'local-delete-turn',
+                        topicOptions: { nodeType: localDeleteResult.deleted ? 'state' : 'conclusion' },
                     });
-                    updateStateEngineForTurn(userMsgForHistory, aiMsgForHistory);
-                    persistChatHistory();
-                    isProcessing = false;
-                    sendBtn.disabled = false;
-                    userInput.disabled = false;
-                    setThinkingState(false);
-                    userInput.focus();
+                    restoreInputAfterProcessing();
                     enqueueTopicMemory();
-                    updateMemoryPanel();
                     setActiveFocus('空闲', '等待输入', []);
                     return;
                 }
@@ -5014,18 +5115,12 @@
                         messageId: aiMsgForHistory.id,
                     });
                     conversationHistory.push(aiMsgForHistory);
-                    upsertTopicCardForTurn(userMsgForHistory, aiMsgForHistory, {
-                        nodeType: localUpdateResult.updated ? 'state' : 'conclusion',
+                    commitTurnClosedLoop(userMsgForHistory, aiMsgForHistory, {
+                        stage: 'local-update-turn',
+                        topicOptions: { nodeType: localUpdateResult.updated ? 'state' : 'conclusion' },
                     });
-                    updateStateEngineForTurn(userMsgForHistory, aiMsgForHistory);
-                    persistChatHistory();
-                    isProcessing = false;
-                    sendBtn.disabled = false;
-                    userInput.disabled = false;
-                    setThinkingState(false);
-                    userInput.focus();
+                    restoreInputAfterProcessing();
                     enqueueTopicMemory();
-                    updateMemoryPanel();
                     setActiveFocus('空闲', '等待输入', []);
                     return;
                 }
@@ -5033,11 +5128,14 @@
                 if (!settings.apiKey) {
                     showToast('⚠ 请先在设置中配置API Key');
                     openSettings();
-                    isProcessing = false;
-                    sendBtn.disabled = false;
-                    userInput.disabled = false;
-                    setThinkingState(false);
-                    userInput.focus();
+                    commitTurnClosedLoop(userMsgForHistory, null, {
+                        stage: 'missing-api-key-turn',
+                        organizeTopic: false,
+                        updateState: false,
+                        expectAssistant: false,
+                        warn: true,
+                    });
+                    restoreInputAfterProcessing({ focus: false });
                     enqueueTopicMemory();
                     setActiveFocus('配置 API Key', '等待用户保存设置', ['发送消息']);
                     return;
@@ -5120,8 +5218,6 @@
                             parsedAiResponse.memoryParseError,
                             parsedAiResponse.memoryParseRaw || parsedAiResponse.raw
                         );
-                    } else {
-                        organizeTopicMessagesBatch([userMsgForHistory, aiMsgForHistory]);
                     }
 
                     // 同时将AI回复的关键信息存入短期记忆（若标记中已写入短期记忆则跳过，避免重复）
@@ -5134,8 +5230,11 @@
                         'ai_response');
                     }
 
-                    updateStateEngineForTurn(userMsgForHistory, aiMsgForHistory);
-                    updateMemoryPanel();
+                    commitTurnClosedLoop(userMsgForHistory, aiMsgForHistory, {
+                        stage: parsedAiResponse.memoryParseError ? 'api-turn-memory-parse-warning' : 'api-turn',
+                        organizeTopic: !parsedAiResponse.memoryParseError,
+                        warn: !!parsedAiResponse.memoryParseError,
+                    });
                 } catch (error) {
                     if (aiMsgPlaceholder.parentNode) aiMsgPlaceholder.parentNode.removeChild(aiMsgPlaceholder);
                     const errorMsg = error.message || '未知错误';
@@ -5143,24 +5242,26 @@
                     setActiveFocus(focusTaskName, '发生错误', ['重复发送']);
                     const errorTimestamp = Date.now();
                     const visibleError = '❌ **出错啦**：' + errorMsg + '\n\n请检查网络连接和API设置。';
-                    renderMessage('ai', visibleError, errorTimestamp, { applyMemoryUpdate: true });
                     const errorMsgForHistory = {
+                        id: createMessageId('assistant', errorTimestamp),
                         role: 'assistant',
                         content: 'API调用失败：' + errorMsg,
                         timestamp: errorTimestamp,
                     };
-                    upsertTopicCardForTurn(userMsgForHistory, errorMsgForHistory, { nodeType: 'error', force: true });
-                    updateStateEngineForTurn(userMsgForHistory, errorMsgForHistory);
+                    renderMessage('ai', visibleError, errorTimestamp, {
+                        applyMemoryUpdate: true,
+                        messageId: errorMsgForHistory.id,
+                    });
+                    conversationHistory.push(errorMsgForHistory);
+                    commitTurnClosedLoop(userMsgForHistory, errorMsgForHistory, {
+                        stage: 'api-error-turn',
+                        topicOptions: { nodeType: 'error', force: true },
+                        warn: true,
+                    });
                     console.error('API调用失败:', error);
                 } finally {
-                    isProcessing = false;
-                    sendBtn.disabled = false;
-                    userInput.disabled = false;
-                    setThinkingState(false);
-                    userInput.focus();
+                    restoreInputAfterProcessing();
                     enqueueTopicMemory();
-                    updateMemoryPanel();
-                    persistChatHistory();
                     setActiveFocus('空闲', '等待输入', []);
                 }
             }
@@ -5664,10 +5765,26 @@
             function toggleSidebar() {
                 sidebar.classList.toggle('collapsed');
             }
+            function keepMobileSidebarNonBlocking(reason = 'mobile-layout') {
+                if (!isMobileViewport()) return false;
+                const wasOpen = !sidebar.classList.contains('collapsed');
+                sidebar.classList.add('collapsed');
+                if (wasOpen) {
+                    writeRuntimeSelfCheck(reason, {
+                        mobileViewport: true,
+                        sidebarCollapsed: sidebar.classList.contains('collapsed'),
+                        chatInputEnabled: !userInput.disabled,
+                    });
+                }
+                return wasOpen;
+            }
             menuBtn.addEventListener('click', toggleSidebar);
             sidebarClose.addEventListener('click', function() {
                 sidebar.classList.add('collapsed');
             });
+            window.addEventListener('orientationchange', () => {
+                setTimeout(() => keepMobileSidebarNonBlocking('orientation-mobile-sidebar'), 120);
+            }, { passive: true });
 
             // ==================== 记忆面板按钮 ====================
             btnCleanExpired.addEventListener('click', function() {
@@ -6029,6 +6146,7 @@
             function init() {
                 populateSettingsForm();
                 refreshActiveFocusDisplay();
+                keepMobileSidebarNonBlocking('init-mobile-sidebar');
                 updateMemoryPanel();
                 refreshDebugPanel();
                 if (!isMobileViewport()) userInput.focus();
@@ -6094,6 +6212,15 @@
                 debugLog('  - 短期记忆:', memorySystem.shortTerm.entries.length, '/', MAX_SHORT_TERM_ENTRIES, '条');
                 debugLog('  - 长期记忆:', countLongTermEntries(), '条');
                 debugLog('  - 波动记忆:', countVolatileEntries(), '条');
+                writeRuntimeSelfCheck('startup', {
+                    storageAvailable: !!window.localStorage,
+                    chatHistoryLoaded: Array.isArray(conversationHistory),
+                    memoryRuntimeStorageSynced: summarizeMemoryStorage().isRuntimeStorageSynced,
+                    mobileSidebarNonBlocking: !isMobileViewport() || sidebar.classList.contains('collapsed'),
+                    topicCardsReady: Array.isArray(topicCards),
+                    topicIndexReady: !topicMemoryManager || !!topicMemoryManager.getState(),
+                    inputEnabled: !userInput.disabled,
+                });
             }
 
             // 页面卸载前保存
