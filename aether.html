@@ -1202,6 +1202,11 @@
                     <h4><span class="dot dot-state"></span>状态引擎 V2</h4>
                     <div class="empty-hint">暂无状态轨迹</div>
                 </div>
+                <!-- 累积式用户画像 -->
+                <div class="memory-section" id="memUserProfile">
+                    <h4><span class="dot dot-long"></span>用户画像</h4>
+                    <div class="empty-hint">等待归档早期对话</div>
+                </div>
                 <!-- 话题卡片 -->
                 <div class="memory-section" id="memTopics">
                     <h4><span class="dot dot-long"></span>话题卡片</h4>
@@ -1571,6 +1576,10 @@
                 CHAT_HISTORY: 'chat_history_cache',
                 SESSION_API_KEY: 'session_api_key',
                 TOPIC_MEMORY: 'mem_topic_memory',
+                TOPIC_INDEX: 'topic_index',
+                USER_PROFILE: 'memory_user_profile',
+                LAST_GOOD_BACKUP: 'last_good_backup',
+                MEMORY_ERROR_LOG: 'memory_error_log',
                 STATE_ENGINE: 'mem_state_engine',
             };
 
@@ -1603,7 +1612,10 @@
             }
 
             function safeJsonParse(raw, fallbackValue = null, label = 'JSON') {
-                const text = String(raw || '').trim();
+                const text = String(raw || '')
+                    .replace(/^\uFEFF/, '')
+                    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+                    .trim();
                 const attempts = [];
                 const tryParse = (candidate, source) => {
                     if (!candidate || !String(candidate).trim()) return null;
@@ -1632,8 +1644,16 @@
                 const codeBlockMatch = text.match(/```json\s*([\s\S]*?)```/i) ||
                     text.match(/```\s*([\s\S]*?)```/i);
                 if (codeBlockMatch) {
-                    const codeBlock = tryParse(codeBlockMatch[1], 'json-code-block');
+                    const codeBlock = tryParse(codeBlockMatch[1].replace(/,\s*([}\]])/g, '$1'), 'json-code-block');
                     if (codeBlock) return codeBlock;
+                }
+
+                const firstObject = text.indexOf('{');
+                const lastObject = text.lastIndexOf('}');
+                if (firstObject >= 0 && lastObject > firstObject) {
+                    const objectText = text.slice(firstObject, lastObject + 1).replace(/,\s*([}\]])/g, '$1');
+                    const objectParse = tryParse(objectText, 'object-slice-cleaned');
+                    if (objectParse) return objectParse;
                 }
 
                 const firstArray = text.indexOf('[');
@@ -1658,9 +1678,99 @@
                 };
             }
 
+            function writeLastGoodBackup(type, value) {
+                try {
+                    const raw = localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP);
+                    const current = raw ? JSON.parse(raw) : {};
+                    current[type] = { saved_at: Date.now(), value };
+                    localStorage.setItem(STORAGE_KEYS.LAST_GOOD_BACKUP, JSON.stringify(current));
+                } catch (error) {
+                    console.warn('last_good_backup 写入失败', error);
+                }
+            }
+
+            function recordMemoryError(type, error, raw = '') {
+                const entry = {
+                    type,
+                    message: error && error.message ? error.message : String(error || '未知错误'),
+                    at: Date.now(),
+                    raw: String(raw || '').slice(0, 500),
+                };
+                try {
+                    const parsed = safeJsonParse(localStorage.getItem(STORAGE_KEYS.MEMORY_ERROR_LOG) || '[]', [], 'MEMORY_ERROR_LOG');
+                    const log = parsed.ok && Array.isArray(parsed.value) ? parsed.value : [];
+                    localStorage.setItem(STORAGE_KEYS.MEMORY_ERROR_LOG, JSON.stringify([entry].concat(log).slice(0, 50)));
+                } catch (ignore) { /* error logging cannot break memory processing */ }
+                console.error('[memory][' + type + ']', entry);
+                return entry;
+            }
+
+            const USER_PROFILE_SECTIONS = {
+                long_term_preferences: '长期偏好',
+                project_goals: '项目目标',
+                common_patterns: '常见问题/行为模式',
+                ai_project_status: '当前AI助手项目状态',
+                background_information: '不希望重复解释的背景',
+            };
+
+            function emptyUserProfile() {
+                return {
+                    version: 1,
+                    updated_at: null,
+                    sections: Object.keys(USER_PROFILE_SECTIONS).reduce((result, key) => {
+                        result[key] = [];
+                        return result;
+                    }, {}),
+                };
+            }
+
+            let userProfileLoadFailed = false;
+
+            function loadUserProfile() {
+                const fallback = emptyUserProfile();
+                const parsed = safeJsonParse(localStorage.getItem(STORAGE_KEYS.USER_PROFILE) || '', fallback, 'USER_PROFILE');
+                if (!parsed.ok) {
+                    if (localStorage.getItem(STORAGE_KEYS.USER_PROFILE)) {
+                        recordMemoryError('user_profile_load', parsed.error);
+                        try {
+                            const backup = JSON.parse(localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP) || '{}');
+                            if (backup.memory_user_profile && backup.memory_user_profile.value) {
+                                return backup.memory_user_profile.value;
+                            }
+                        } catch (backupError) { /* preserve corrupt profile source */ }
+                        userProfileLoadFailed = true;
+                    }
+                    return fallback;
+                }
+                const profile = parsed.value && typeof parsed.value === 'object' ? parsed.value : fallback;
+                profile.sections = profile.sections && typeof profile.sections === 'object' ? profile.sections : {};
+                Object.keys(USER_PROFILE_SECTIONS).forEach(key => {
+                    if (!Array.isArray(profile.sections[key])) profile.sections[key] = [];
+                });
+                return profile;
+            }
+
+            let memoryUserProfile = loadUserProfile();
+
+            function saveUserProfile() {
+                if (userProfileLoadFailed) return;
+                try {
+                    const currentRaw = localStorage.getItem(STORAGE_KEYS.USER_PROFILE);
+                    if (currentRaw) {
+                        const current = safeJsonParse(currentRaw, null, 'USER_PROFILE_BACKUP');
+                        if (current.ok) writeLastGoodBackup('memory_user_profile', current.value);
+                    }
+                    localStorage.setItem(STORAGE_KEYS.USER_PROFILE, JSON.stringify(memoryUserProfile));
+                } catch (error) {
+                    recordMemoryError('user_profile_save', error);
+                }
+            }
+            saveUserProfile();
+
             // ==================== 记忆系统 ====================
             class MemorySystem {
                 constructor() {
+                    this._invalidStorageKeys = new Set();
                     this.loadAll();
                 }
 
@@ -1709,23 +1819,36 @@
                     try {
                         const raw = localStorage.getItem(key);
                         if (raw) return JSON.parse(raw);
-                    } catch (e) { /* ignore */ }
+                    } catch (e) {
+                        recordMemoryError('stored_memory_json_parse:' + key, e, localStorage.getItem(key) || '');
+                        try {
+                            const backup = JSON.parse(localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP) || '{}');
+                            if (backup[key] && backup[key].value) return backup[key].value;
+                        } catch (backupError) { /* keep the corrupt source untouched */ }
+                        this._invalidStorageKeys.add(key);
+                    }
                     return defaultVal;
                 }
 
                 _saveAll() {
                     try {
-                        localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
-                        localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
-                        localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                        [STORAGE_KEYS.SHORT_TERM, STORAGE_KEYS.LONG_TERM, STORAGE_KEYS.VOLATILE].forEach(key => {
+                            const raw = localStorage.getItem(key);
+                            if (!raw) return;
+                            const parsed = safeJsonParse(raw, null, 'MEMORY_BACKUP');
+                            if (parsed.ok) writeLastGoodBackup(key, parsed.value);
+                        });
+                        if (!this._invalidStorageKeys.has(STORAGE_KEYS.SHORT_TERM)) localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
+                        if (!this._invalidStorageKeys.has(STORAGE_KEYS.LONG_TERM)) localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
+                        if (!this._invalidStorageKeys.has(STORAGE_KEYS.VOLATILE)) localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
                         this._recordSaveSnapshot();
                     } catch (e) {
                         console.warn('记忆存储空间不足', e);
                         this._cleanExpired();
                         try {
-                            localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
-                            localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
-                            localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
+                            if (!this._invalidStorageKeys.has(STORAGE_KEYS.SHORT_TERM)) localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
+                            if (!this._invalidStorageKeys.has(STORAGE_KEYS.LONG_TERM)) localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
+                            if (!this._invalidStorageKeys.has(STORAGE_KEYS.VOLATILE)) localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
                             this._recordSaveSnapshot();
                         } catch (e2) {
                             console.error('记忆存储失败', e2);
@@ -2738,7 +2861,10 @@
             window.memorySystem = new MemorySystem();
             const memorySystem = window.memorySystem;
             const topicMemoryManager = window.TopicMemoryManager ? new window.TopicMemoryManager({
-                storageKey: STORAGE_KEYS.TOPIC_MEMORY,
+                storageKey: STORAGE_KEYS.TOPIC_INDEX,
+                legacyStorageKey: STORAGE_KEYS.TOPIC_MEMORY,
+                backupKey: STORAGE_KEYS.LAST_GOOD_BACKUP,
+                errorLogKey: STORAGE_KEYS.MEMORY_ERROR_LOG,
                 callApi: callDeepSeekAPI,
                 hasApiKey: () => !!loadSettings().apiKey,
                 isBusy: () => isProcessing,
@@ -3196,20 +3322,9 @@
                 const state = topicMemoryManager ? topicMemoryManager.getState() : null;
                 const indexedTopics = state && Array.isArray(state.topics) ? state.topics.slice(-8) : [];
                 const indexedSummary = indexedTopics.map(topic => {
-                    const chain = (topic.chain || [])
-                        .map(node => node.label)
-                        .filter(Boolean)
-                        .join(' -> ');
-                    const start = topic.startTime
-                        ? new Date(topic.startTime).toLocaleString('zh-CN', {
-                            hour12: false,
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                        })
-                        : '未知时间';
-                    return `- ${topic.title || '未命名话题'}（${start}）：${chain || '暂无因果链'}`;
+                    const detail = topic.summary || (topic.facts || []).slice(0, 3).join('；') ||
+                        (topic.chain || []).slice(-2).map(node => node.label).filter(Boolean).join(' → ');
+                    return `- [${topic.category || '其他'}] ${topic.title || '未命名话题'}：${detail || '暂无摘要'}`;
                 });
 
                 const sections = [];
@@ -3271,7 +3386,8 @@
                 const shortStore = safeParseStorage(STORAGE_KEYS.SHORT_TERM);
                 const longStore = safeParseStorage(STORAGE_KEYS.LONG_TERM);
                 const volatileStore = safeParseStorage(STORAGE_KEYS.VOLATILE);
-                const topicStore = safeParseStorage(STORAGE_KEYS.TOPIC_MEMORY);
+                const topicStore = safeParseStorage(STORAGE_KEYS.TOPIC_INDEX);
+                const profileStore = safeParseStorage(STORAGE_KEYS.USER_PROFILE);
                 const shortEntries = shortStore.value && Array.isArray(shortStore.value.entries)
                     ? shortStore.value.entries.length
                     : 0;
@@ -3279,6 +3395,9 @@
                 const volatileValue = volatileStore.value || {};
                 const topicValue = topicStore.value || {};
                 const topicCount = countArray(topicValue.topics);
+                const profileCount = profileStore.value && profileStore.value.sections
+                    ? Object.values(profileStore.value.sections).reduce((sum, items) => sum + countArray(items), 0)
+                    : 0;
                 const longCount = countLongTermEntriesFromValue(longValue);
                 const volatileCount = countVolatileEntriesFromValue(volatileValue);
                 const runtimeSnapshot = memorySystem.getDebugSnapshot();
@@ -3297,7 +3416,8 @@
                     longStore,
                     volatileStore,
                     topicStore,
-                    summary: `短期 ${shortEntries} / 话题 ${topicCount} / 长期 ${longCount} / 波动 ${volatileCount}`,
+                    profileStore,
+                    summary: `画像 ${profileCount} / 短期 ${shortEntries} / 话题 ${topicCount} / 长期 ${longCount} / 波动 ${volatileCount}`,
                     runtimeSnapshot,
                     storageSnapshot,
                     isRuntimeStorageSynced: JSON.stringify(runtimeSnapshot) === JSON.stringify(storageSnapshot),
@@ -3317,10 +3437,15 @@
                             value: volatileStore.value,
                             error: volatileStore.error,
                         },
-                        [STORAGE_KEYS.TOPIC_MEMORY]: {
+                        [STORAGE_KEYS.TOPIC_INDEX]: {
                             bytes: topicStore.raw.length,
                             value: topicStore.value,
                             error: topicStore.error,
+                        },
+                        [STORAGE_KEYS.USER_PROFILE]: {
+                            bytes: profileStore.raw.length,
+                            value: profileStore.value,
+                            error: profileStore.error,
                         },
                         runtimeSnapshot,
                         storageSnapshot,
@@ -3630,15 +3755,16 @@
                     parseRaw = match[1].trim();
                     debugLog('[MEMORY_UPDATE] raw AI response before JSON.parse:', responseWithMarker);
                     const parsed = safeJsonParse(parseRaw, {}, 'MEMORY_UPDATE');
-                    if (parsed.ok) {
+                    if (parsed.ok && parsed.value && typeof parsed.value === 'object' && !Array.isArray(parsed.value)) {
                         memoryData = parsed.value;
                         if (shouldApply) {
                             memorySystem._applyMemoryData(memoryData);
                             window.dispatchEvent(new CustomEvent('aether-memory-updated'));
                         }
                     } else {
-                        parseError = parsed.error || 'JSON 解析失败';
+                        parseError = parsed.ok ? '记忆更新 JSON schema 无效：必须是对象' : (parsed.error || 'JSON 解析失败');
                         console.error('记忆更新标记解析失败:', parsed);
+                        recordMemoryError('memory_update_json_parse', parseError, parseRaw);
                         recordDebugError(parseError, '记忆更新标记解析失败');
                     }
                 }
@@ -3965,7 +4091,16 @@
             function compactConversationHistory() {
                 if (conversationHistory.length <= MAX_STORED_CHAT_MESSAGES) return;
                 const overflowCount = conversationHistory.length - MAX_STORED_CHAT_MESSAGES;
-                const archived = conversationHistory.slice(0, overflowCount)
+                const archivedMessages = conversationHistory.slice(0, overflowCount);
+                updateUserProfileFromArchived(archivedMessages);
+                if (topicMemoryManager && typeof topicMemoryManager.applyFallbackTopics === 'function') {
+                    try {
+                        topicMemoryManager.applyFallbackTopics(archivedMessages, { advanceMarker: false });
+                    } catch (error) {
+                        recordMemoryError('topic_index_archive', error);
+                    }
+                }
+                const archived = archivedMessages
                     .map(messageSnippetForSummary)
                     .filter(Boolean);
                 const existing = conversationSummary
@@ -3973,6 +4108,62 @@
                     : [];
                 conversationSummary = mergeConversationSummaryLines(existing, archived).join('\n');
                 conversationHistory = conversationHistory.slice(overflowCount);
+            }
+
+            function profileTextSimilarity(a, b) {
+                if (memorySystem && typeof memorySystem._similarity === 'function') {
+                    return memorySystem._similarity(String(a || ''), String(b || ''));
+                }
+                return String(a || '') === String(b || '') ? 1 : 0;
+            }
+
+            function mergeUserProfileItem(section, text, messageId, timestamp) {
+                const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+                if (!clean || clean.length < 3) return;
+                const list = memoryUserProfile.sections[section] || (memoryUserProfile.sections[section] = []);
+                const existing = list.find(item => profileTextSimilarity(item.text, clean) > 0.72);
+                if (existing) {
+                    if (clean.length > existing.text.length) existing.text = clean;
+                    existing.updated_at = timestamp || Date.now();
+                    existing.source_message_ids = Array.from(new Set((existing.source_message_ids || []).concat(messageId || []))).slice(-20);
+                    return;
+                }
+                list.push({
+                    id: 'profile_' + section + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+                    text: clean,
+                    created_at: timestamp || Date.now(),
+                    updated_at: timestamp || Date.now(),
+                    source_message_ids: messageId ? [messageId] : [],
+                });
+            }
+
+            function updateUserProfileFromArchived(messages) {
+                try {
+                    (messages || []).filter(msg => msg && msg.role === 'user' && msg.content).forEach(msg => {
+                        const text = String(msg.content).trim();
+                        const matched = [];
+                        if (/喜欢|偏好|希望你|回复.{0,8}(简短|详细|直接)|不要.{0,12}(啰嗦|重复)|习惯/i.test(text)) matched.push('long_term_preferences');
+                        if (/项目|目标|开发|实现|重构|修复|验收|要做|正在做/i.test(text)) matched.push('project_goals');
+                        if (/经常|总是|反复|每次|常见|容易|卡住|问题|行为模式/i.test(text)) matched.push('common_patterns');
+                        if (/AI助手|记忆系统|话题|当前|现在|已经|完成|进行中|待处理|版本/i.test(text)) matched.push('ai_project_status');
+                        if (/不要重复|不用再解释|请记住|背景|之前说过|一直以来/i.test(text)) matched.push('background_information');
+                        if (matched.length === 0) matched.push('background_information');
+                        matched.forEach(section => mergeUserProfileItem(section, text, msg.id, msg.timestamp));
+                    });
+                    memoryUserProfile.updated_at = Date.now();
+                    saveUserProfile();
+                } catch (error) {
+                    recordMemoryError('user_profile_extract', error);
+                }
+            }
+
+            function getUserProfileSummary() {
+                const lines = [];
+                Object.entries(USER_PROFILE_SECTIONS).forEach(([key, label]) => {
+                    const items = (memoryUserProfile.sections[key] || []).slice(-8);
+                    if (items.length) lines.push(label + '：\n' + items.map(item => '- ' + item.text).join('\n'));
+                });
+                return lines.join('\n');
             }
 
             function buildApiConversationMessages() {
@@ -4674,6 +4865,7 @@
             // ==================== 构建系统提示 ====================
             function buildSystemPrompt() {
                 const memorySummary = memorySystem.getMemorySummary();
+                const userProfileSummary = getUserProfileSummary();
                 const topicMemorySummary = getTopicMemorySummary();
                 const stateEngineSummary = stateEngine.getPromptSummary();
                 const beijingTemporalContext = getBeijingTemporalContext();
@@ -4695,6 +4887,7 @@
                     "",
                     "## 已存储的记忆",
                     memorySummary,
+                    userProfileSummary ? "\n## 长期累积用户画像\n" + userProfileSummary : "",
                     topicMemorySummary ? "\n## 话题短期记忆\n" + topicMemorySummary : "",
                     "",
                     "## 状态感知引擎 V2",
@@ -5158,7 +5351,7 @@
                     '<span>' + (state.pendingCount || 0) + ' 条待处理</span></div>';
 
                 if (state.lastError) {
-                    html += '<div class="empty-hint">最近错误：' + escapeHTML(state.lastError) + '</div>';
+                    html += '<div class="empty-hint">最近错误 [' + escapeHTML(state.lastErrorType || 'topic_index') + ']：' + escapeHTML(state.lastError) + '</div>';
                 }
 
                 if (topics.length === 0) {
@@ -5168,10 +5361,11 @@
                 }
 
                 topics.slice(-8).reverse().forEach(topic => {
-                    const chainLabels = (topic.chain || []).map(node => node.label).filter(Boolean);
-                    const chainText = chainLabels.length ? chainLabels.join(' -> ') : '暂无因果链';
-                    const timeText = topic.startTime
-                        ? new Date(topic.startTime).toLocaleString('zh-CN', {
+                    const facts = (topic.facts || []).slice(0, 3).join('；');
+                    const summaryText = topic.summary || facts || ((topic.chain || []).map(node => node.label).filter(Boolean).slice(-2).join(' → ')) || '暂无摘要';
+                    const updatedAt = topic.updated_at || topic.updatedAt || topic.startTime;
+                    const timeText = updatedAt
+                        ? new Date(updatedAt).toLocaleString('zh-CN', {
                             hour12: false,
                             month: '2-digit',
                             day: '2-digit',
@@ -5179,15 +5373,14 @@
                             minute: '2-digit',
                         })
                         : '未知时间';
-                    const msgCount = Array.isArray(topic.messageIds) ? topic.messageIds.length : 0;
+                    const msgCount = topic.message_count || (Array.isArray(topic.messageIds) ? topic.messageIds.length : 0);
                     html +=
                         '<div class="mem-item" role="button" tabindex="0" data-memory-target="' +
                         encodeURIComponent(JSON.stringify({ scope: 'topicMemory', id: topic.id, title: topic.title })) +
                         '" data-memory-label="' + encodeURIComponent(topic.title || '话题记忆') + '">' +
                         escapeHTML(topic.title || '未命名话题') +
-                        '<div class="mem-meta">' + escapeHTML(timeText) + ' · ' + msgCount + ' 条消息</div>' +
-                        '<div class="topic-chain">' + escapeHTML(chainText) +
-                        ' <span class="topic-node-count">(' + (topic.chain || []).length + ' 节点)</span></div>' +
+                        '<div class="mem-meta">' + escapeHTML(topic.category || '其他') + ' · ' + escapeHTML(timeText) + ' · ' + msgCount + ' 条</div>' +
+                        '<div class="topic-chain">' + escapeHTML(summaryText) + '</div>' +
                         '</div>';
                 });
 
@@ -5244,6 +5437,7 @@
                 const memShort = $('#memShort');
                 const memLong = $('#memLong');
                 const memVolatile = $('#memVolatile');
+                const memUserProfile = $('#memUserProfile');
                 const sidebarStats = $('#sidebarStats');
                 if (!memShort || !memLong || !memVolatile) return;
 
@@ -5325,6 +5519,27 @@
                     memTopics.innerHTML = topicHTML;
                 }
                 renderTopicMemoryPanel();
+
+                if (memUserProfile) {
+                    const profileCount = Object.keys(USER_PROFILE_SECTIONS).reduce((count, key) =>
+                        count + (memoryUserProfile.sections[key] || []).length, 0);
+                    let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条）</h4>';
+                    Object.entries(USER_PROFILE_SECTIONS).forEach(([key, label]) => {
+                        const items = (memoryUserProfile.sections[key] || []).slice(-2).reverse();
+                        items.forEach(item => {
+                            profileHTML += '<div class="mem-item">' + escapeHTML(item.text) +
+                                '<div class="mem-meta">' + escapeHTML(label) + '</div></div>';
+                        });
+                    });
+                    let errorLog = [];
+                    const parsedErrors = safeJsonParse(localStorage.getItem(STORAGE_KEYS.MEMORY_ERROR_LOG) || '[]', [], 'MEMORY_ERROR_LOG_PANEL');
+                    if (parsedErrors.ok && Array.isArray(parsedErrors.value)) errorLog = parsedErrors.value;
+                    if (errorLog.length) {
+                        profileHTML += '<div class="empty-hint">最近整理失败：' + escapeHTML(errorLog[0].type) + ' · ' + escapeHTML(errorLog[0].message) + '</div>';
+                    }
+                    if (!profileCount) profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
+                    memUserProfile.innerHTML = profileHTML;
+                }
 
                 const sevenDays = 7 * 24 * 60 * 60 * 1000;
                 const now = Date.now();
@@ -5560,6 +5775,7 @@
                 compactConversationHistory();
                 const data = memorySystem.exportData(conversationHistory, conversationSummary, topicCards);
                 if (topicMemoryManager) data.topicMemory = topicMemoryManager.getState();
+                data.userProfile = memoryUserProfile;
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
             }
@@ -5648,6 +5864,7 @@
                         let volatileImported = 0;
                         let topicImported = 0;
                         let stateImported = 0;
+                        let profileImported = 0;
                         let hasChatChanges = false;
                         let hasSummaryChanges = false;
                         let hasTopicChanges = false;
@@ -5850,6 +6067,18 @@
                             }
                         }
 
+                        if (imported.userProfile && imported.userProfile.sections) {
+                            userProfileLoadFailed = false;
+                            Object.keys(USER_PROFILE_SECTIONS).forEach(section => {
+                                (imported.userProfile.sections[section] || []).forEach(item => {
+                                    mergeUserProfileItem(section, item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
+                                    profileImported += 1;
+                                });
+                            });
+                            memoryUserProfile.updated_at = Date.now();
+                            saveUserProfile();
+                        }
+
                         if (imported.topicMemory && topicMemoryManager) {
                             topicImported += topicMemoryManager.importData(imported.topicMemory);
                             hasTopicChanges = hasTopicChanges || topicImported > 0;
@@ -5880,9 +6109,10 @@
                         if (shortImported > 0) msg += `短期${shortImported}条、`;
                         if (topicImported > 0) msg += `话题${topicImported}条、`;
                         if (stateImported > 0) msg += `状态${stateImported}组、`;
+                        if (profileImported > 0) msg += `画像${profileImported}条、`;
                         if (longImported > 0) msg += `长期${longImported}条、`;
                         if (volatileImported > 0) msg += `波动${volatileImported}条、`;
-                        if (chatImported === 0 && shortImported === 0 && topicImported === 0 &&
+                        if (chatImported === 0 && shortImported === 0 && topicImported === 0 && profileImported === 0 &&
                             stateImported === 0 && longImported === 0 && volatileImported === 0) {
                             msg = '未导入新数据（可能已存在或格式无效）';
                         } else {
@@ -5903,6 +6133,9 @@
                     memorySystem.clearAll();
                     stateEngine.clear();
                     if (topicMemoryManager) topicMemoryManager.clear();
+                    memoryUserProfile = emptyUserProfile();
+                    userProfileLoadFailed = false;
+                    saveUserProfile();
                     clearSelectedMemory();
                     clearChatHistory();
                     updateMemoryPanel();
