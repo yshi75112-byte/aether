@@ -36,6 +36,104 @@ async function testTopicIndex() {
     assert(localStorage.getItem('topic_index'), '应保存 topic_index');
     assert(localStorage.getItem('last_good_backup'), '应保存 last_good_backup');
     assert(localStorage.getItem('memory_error_log').includes('topic_index_json_parse'), '应写入分类错误日志');
+
+    const topicBeforeViolation = localStorage.getItem('mem_topic_memory');
+    localStorage.setItem('mem_topic_memory', '{"bypass":true}');
+    assert.strictEqual(localStorage.getItem('mem_topic_memory'), topicBeforeViolation,
+        '非 TopicMemoryManager 不得写 mem_topic_memory');
+}
+
+function testMemoryWriteGuard() {
+    const html = fs.readFileSync('./aether.html', 'utf8');
+    const helpersStart = html.indexOf('const memoryWriteAuthorization =');
+    const helpersEnd = html.indexOf('function writeRuntimeSelfCheck(', helpersStart);
+    const classStart = html.indexOf('class MemorySystem {');
+    const classEnd = html.indexOf('// 初始化记忆系统', classStart);
+    assert(helpersStart >= 0 && helpersEnd > helpersStart, '未找到 memory guard helpers');
+    assert(classStart >= 0 && classEnd > classStart, '未找到 MemorySystem');
+
+    const storage = new LocalStorageMock();
+    const warnings = [];
+    const context = {
+        console: {
+            log() {}, info() {}, error() {},
+            warn(...args) { warnings.push(args); },
+        },
+        localStorage: storage,
+        window: {},
+        memoryDebugMode: true,
+        STORAGE_KEYS: {
+            SHORT_TERM: 'mem_short_term', LONG_TERM: 'mem_long_term', VOLATILE: 'mem_volatile',
+            LAST_GOOD_BACKUP: 'last_good_backup', MEMORY_ERROR_LOG: 'memory_error_log',
+        },
+        MAX_SHORT_TERM_ENTRIES: 50,
+        debugState: {},
+        selectedMemory: null,
+        debugLog() {},
+        updateMemoryPanel() {}, clearSelectedMemory() {}, showToast() {},
+        getBeijingDateParts: () => ({ dateText: '2026-06-19' }),
+        countLongTermEntriesFromValue: value => ['expenses', 'preferences', 'aiLearning', 'facts']
+            .reduce((sum, key) => sum + ((value && value[key]) || []).length, 0),
+        countVolatileEntriesFromValue: value => ['plans', 'temporaryEvents']
+            .reduce((sum, key) => sum + ((value && value[key]) || []).length, 0),
+        countDefinedBasicInfo: () => 0,
+        countArray: value => Array.isArray(value) ? value.length : 0,
+        safeJsonParse(raw, fallback) {
+            try { return { ok: true, value: JSON.parse(raw) }; }
+            catch (error) { return { ok: false, value: fallback, error }; }
+        },
+        writeLastGoodBackup() {},
+        recordMemoryError() {},
+        extractMemoryUpdatePayload: value => value,
+    };
+    context.window = context;
+    vm.createContext(context);
+    vm.runInContext(
+        html.slice(helpersStart, helpersEnd) + '\n' +
+        html.slice(classStart, classEnd) + '\nthis.MemorySystem = MemorySystem;',
+        context
+    );
+
+    const manager = new context.MemorySystem();
+    context.memorySystem = manager;
+    const guardedCalls = [
+        () => manager.addShortTerm('禁止直写'),
+        () => manager.addPreference('测试', '禁止直写'),
+        () => manager.addLongTermFact('测试', '禁止直写'),
+        () => manager.addPlan('测试', '禁止直写'),
+        () => manager.addTemporaryEvent('禁止直写'),
+        () => manager.updateMemory({ scope: 'all', content: 'x' }, { content: 'y' }),
+        () => manager.removeMemory({ scope: 'all', content: 'x' }),
+    ];
+    guardedCalls.forEach(call => assert.strictEqual(call(), false, '越权写入必须返回 false'));
+    assert.strictEqual(storage.getItem('mem_short_term'), null, '越权调用不得写短期记忆');
+    assert.strictEqual(storage.getItem('mem_long_term'), null, '越权调用不得写长期记忆');
+    assert.strictEqual(storage.getItem('mem_volatile'), null, '越权调用不得写波动记忆');
+    assert(warnings.some(args => args[0] === '[MEMORY VIOLATION]'), '越权调用必须 console.warn');
+
+    storage.setItem('mem_long_term', '{"bypass":true}');
+    assert.strictEqual(storage.getItem('mem_long_term'), null, '直接 localStorage 写核心 memory key 必须被拒绝');
+
+    const guardedTopics = context.createGuardedTopicCards([]);
+    assert.strictEqual(guardedTopics.push({ id: 'forbidden' }), 0, 'topicCards.push 必须被拒绝');
+    assert.strictEqual(guardedTopics.length, 0, 'topicCards.push 不得改变数组');
+
+    manager._applyMemoryData({ preference: { category: '测试', detail: '唯一入口可写' } }, 'API');
+    assert(JSON.parse(storage.getItem('mem_long_term')).preferences.some(item => item.detail === '唯一入口可写'),
+        '_applyMemoryData 应是可落盘的唯一入口');
+    const saved = storage.getItem('mem_long_term');
+    assert.strictEqual(manager._saveAll(), false, '直接调用 _saveAll 必须被总闸拒绝');
+    assert.strictEqual(storage.getItem('mem_long_term'), saved, '被拒绝的 _saveAll 不得改变存储');
+
+    ['applyLocalSaveIntent', 'applyLocalUpdateIntent', 'applyLocalDeleteIntent'].forEach(name => {
+        const start = html.indexOf(`function ${name}(`);
+        const end = html.indexOf('\n            function ', start + 1);
+        const body = html.slice(start, end > start ? end : start + 2000);
+        assert(body.includes('memoryViolation(') && body.includes('memory-write-disabled'),
+            `${name} 必须 warn 并 reject`);
+    });
+    assert(!/memorySystem\.(?:shortTerm|longTerm|volatile)[^\n]*\.(?:push|splice)\(/.test(html),
+        'UI/导入代码不得直接修改 memory 数组');
 }
 
 function testHistoryOverflowProfile() {
@@ -79,6 +177,7 @@ function testHistoryOverflowProfile() {
 
 (async () => {
     await testTopicIndex();
+    testMemoryWriteGuard();
     testHistoryOverflowProfile();
     console.log('Memory V2 tests passed');
 })().catch(error => {
