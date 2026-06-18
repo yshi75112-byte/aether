@@ -1,4 +1,25 @@
 (function() {
+    let topicWriteDepth = 0;
+    const storagePrototype = typeof Storage !== 'undefined'
+        ? Storage.prototype
+        : (typeof localStorage !== 'undefined' ? Object.getPrototypeOf(localStorage) : null);
+
+    if (storagePrototype && !storagePrototype.__aetherTopicWriteGuardInstalled) {
+        const originalSetItem = storagePrototype.setItem;
+        Object.defineProperty(storagePrototype, '__aetherTopicWriteGuardInstalled', { value: true });
+        storagePrototype.setItem = function(key, value) {
+            if (key === 'mem_topic_memory' && topicWriteDepth === 0) {
+                const stack = new Error('unauthorized mem_topic_memory write').stack || '';
+                console.warn('[MEMORY VIOLATION]', stack, {
+                    action: 'localStorage.setItem(mem_topic_memory)',
+                    source: 'topic/non-TopicMemoryManager',
+                });
+                return false;
+            }
+            return originalSetItem.call(this, key, value);
+        };
+    }
+
     const DEFAULT_STATE = {
         version: 2,
         topics: [],
@@ -165,11 +186,20 @@
         }
 
         save() {
-            const next = JSON.stringify(this.state);
-            const current = localStorage.getItem(this.storageKey);
-            if (current) this.writeBackup('topic_index', current);
-            localStorage.setItem(this.storageKey, next);
-            localStorage.setItem(this.legacyStorageKey, next);
+            const stack = new Error('TopicMemoryManager.save').stack || '';
+            if (window.memoryDebugMode === true) {
+                console.info('[MEMORY WRITE]', { action: 'TopicMemoryManager.save', source: 'topic', stack });
+            }
+            topicWriteDepth += 1;
+            try {
+                const next = JSON.stringify(this.state);
+                const current = localStorage.getItem(this.storageKey);
+                if (current) this.writeBackup('topic_index', current);
+                localStorage.setItem(this.storageKey, next);
+                localStorage.setItem(this.legacyStorageKey, next);
+            } finally {
+                topicWriteDepth -= 1;
+            }
         }
 
         writeBackup(type, value) {

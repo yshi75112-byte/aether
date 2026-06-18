@@ -1472,7 +1472,7 @@
             let isProcessing = false;
             let conversationHistory = []; // 最近对话消息，旧消息会压缩到 conversationSummary
             let conversationSummary = '';
-            let topicCards = [];
+            let topicCards = createGuardedTopicCards([]);
             let messageSequence = 0;
             const MAX_SHORT_TERM_ENTRIES = 50; // 短期记忆最多保留50条
             const MAX_STORED_CHAT_MESSAGES = 120;
@@ -1484,6 +1484,7 @@
             const TOPIC_CARD_LIMIT = 20;
             const MAX_TOPIC_ORGANIZE_BATCH_MESSAGES = 10;
             const DEBUG_LOGS = false;
+            const memoryDebugMode = window.memoryDebugMode = true;
             const BEIJING_TIME_ZONE = 'Asia/Shanghai';
             let autoSaveTimer = null; // 自动保存定时器
             let selectedMemory = null;
@@ -1585,6 +1586,73 @@
 
             function debugLog(...args) {
                 if (DEBUG_LOGS) console.log(...args);
+            }
+
+            const memoryWriteAuthorization = new WeakMap();
+            const MEMORY_WRITE_TOKEN = Symbol('AetherMemoryWriteToken');
+
+            function memoryWriteTrace(action, source, level = 'info') {
+                const stack = new Error(`${action} (${source})`).stack || '';
+                const payload = { action, source, stack };
+                if (memoryDebugMode) console[level]('[MEMORY WRITE]', payload);
+                return payload;
+            }
+
+            function memoryViolation(action, source = 'unknown') {
+                const trace = memoryWriteTrace(action, source, 'warn');
+                console.warn('[MEMORY VIOLATION]', trace.stack, { action, source });
+                return false;
+            }
+
+            function installMemoryStorageGuard() {
+                const prototype = typeof Storage !== 'undefined'
+                    ? Storage.prototype
+                    : Object.getPrototypeOf(localStorage);
+                if (!prototype || prototype.__aetherMemoryWriteGuardInstalled) return;
+                const originalSetItem = prototype.setItem;
+                const originalRemoveItem = prototype.removeItem;
+                const guardedKeys = new Set([
+                    STORAGE_KEYS.SHORT_TERM,
+                    STORAGE_KEYS.LONG_TERM,
+                    STORAGE_KEYS.VOLATILE,
+                ]);
+                Object.defineProperty(prototype, '__aetherMemoryWriteGuardInstalled', { value: true });
+                prototype.setItem = function(key, value) {
+                    const authorized = window.memorySystem && window.memorySystem._isMemoryWriteAuthorized();
+                    if (guardedKeys.has(key) && !authorized) {
+                        return memoryViolation(`localStorage.setItem(${key})`, 'storage');
+                    }
+                    return originalSetItem.call(this, key, value);
+                };
+                prototype.removeItem = function(key) {
+                    const authorized = window.memorySystem && window.memorySystem._isMemoryWriteAuthorized();
+                    if (guardedKeys.has(key) && !authorized) {
+                        return memoryViolation(`localStorage.removeItem(${key})`, 'storage');
+                    }
+                    return originalRemoveItem.call(this, key);
+                };
+            }
+
+            installMemoryStorageGuard();
+
+            function createGuardedTopicCards(items) {
+                const target = Array.isArray(items) ? items.slice() : [];
+                const mutators = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'copyWithin', 'fill']);
+                return new Proxy(target, {
+                    get(array, property, receiver) {
+                        if (mutators.has(property)) {
+                            return () => {
+                                memoryViolation(`topicCards.${String(property)}`, 'topic');
+                                return property === 'push' || property === 'unshift' ? array.length : false;
+                            };
+                        }
+                        return Reflect.get(array, property, receiver);
+                    },
+                    set(array, property) {
+                        memoryViolation(`topicCards[${String(property)}]`, 'topic');
+                        return false;
+                    },
+                });
             }
 
             function writeRuntimeSelfCheck(stage, checks = {}, level = 'info') {
@@ -1771,6 +1839,7 @@
             class MemorySystem {
                 constructor() {
                     this._invalidStorageKeys = new Set();
+                    memoryWriteAuthorization.set(this, { depth: 0, source: null });
                     this.loadAll();
                 }
 
@@ -1799,8 +1868,7 @@
                     });
                     if (!Array.isArray(this.volatile.plans)) this.volatile.plans = [];
                     if (!Array.isArray(this.volatile.temporaryEvents)) this.volatile.temporaryEvents = [];
-                    this._cleanExpired();
-                    this._saveAll();
+                    this._cleanExpired(true);
                     debugLog('🧠 记忆系统初始化完成:', {
                         shortTerm: this.shortTerm.entries.length,
                         longTerm: {
@@ -1831,6 +1899,7 @@
                 }
 
                 _saveAll() {
+                    if (!this._isMemoryWriteAuthorized()) return memoryViolation('_saveAll', 'MemorySystem');
                     try {
                         [STORAGE_KEYS.SHORT_TERM, STORAGE_KEYS.LONG_TERM, STORAGE_KEYS.VOLATILE].forEach(key => {
                             const raw = localStorage.getItem(key);
@@ -1853,6 +1922,30 @@
                         } catch (e2) {
                             console.error('记忆存储失败', e2);
                         }
+                    }
+                }
+
+                _isMemoryWriteAuthorized() {
+                    const authorization = memoryWriteAuthorization.get(this);
+                    return !!authorization && authorization.depth > 0;
+                }
+
+                _guardMemoryWrite(action) {
+                    return this._isMemoryWriteAuthorized() || memoryViolation(action, 'MemorySystem');
+                }
+
+                _withMemoryWriteAccess(source, callback, token) {
+                    if (token !== MEMORY_WRITE_TOKEN) return memoryViolation('_withMemoryWriteAccess', 'MemorySystem');
+                    const authorization = memoryWriteAuthorization.get(this);
+                    authorization.depth += 1;
+                    const previousSource = authorization.source;
+                    authorization.source = source || 'API';
+                    memoryWriteTrace('_applyMemoryData', authorization.source);
+                    try {
+                        return callback();
+                    } finally {
+                        authorization.source = previousSource;
+                        authorization.depth -= 1;
                     }
                 }
 
@@ -1880,7 +1973,8 @@
                 }
 
                 /** 清理过期记忆 */
-                _cleanExpired() {
+                _cleanExpired(initializing = false) {
+                    if (!initializing && !this._guardMemoryWrite('_cleanExpired')) return false;
                     const now = Date.now();
                     const sevenDays = 7 * 24 * 60 * 60 * 1000;
 
@@ -1901,6 +1995,7 @@
 
                 /** 短期记忆 - 添加条目 */
                 addShortTerm(content, source = 'dialogue') {
+                    if (!this._guardMemoryWrite('addShortTerm')) return false;
                     // 提取关键信息后存储（精简）
                     const trimmed = this._extractKeyInfo(content);
                     if (!trimmed || trimmed.length < 2) return;
@@ -1932,6 +2027,7 @@
 
                 /** 长期记忆 - 添加开销 */
                 addExpense(amount, category, description) {
+                    if (!this._guardMemoryWrite('addExpense')) return false;
                     if (!amount && !description) return;
                     const entry = {
                         amount: amount || null,
@@ -1954,6 +2050,7 @@
 
                 /** 长期记忆 - 添加用户喜好 */
                 addPreference(category, detail) {
+                    if (!this._guardMemoryWrite('addPreference')) return false;
                     if (!detail) return;
                     const entry = { category: category || '通用', detail, timestamp: Date.now() };
                     const dup = this.longTerm.preferences.find(p =>
@@ -1970,6 +2067,7 @@
 
                 /** 长期记忆 - 更新基本信息 */
                 updateBasicInfo(field, value) {
+                    if (!this._guardMemoryWrite('updateBasicInfo')) return false;
                     if (field === 'pets' && typeof value === 'object') {
                         // value: {name, type, action: 'add'|'remove'}
                         if (value.action === 'add' && value.name) {
@@ -2001,6 +2099,7 @@
 
                 /** 长期记忆 - AI学习板块 */
                 addAiLearning(topic, content) {
+                    if (!this._guardMemoryWrite('addAiLearning')) return false;
                     if (!topic || !content) return;
                     const entry = { topic, content, timestamp: Date.now() };
                     const dup = this.longTerm.aiLearning.find(l =>
@@ -2017,6 +2116,7 @@
 
                 /** 长期记忆 - 通用事实 */
                 addLongTermFact(category, content) {
+                    if (!this._guardMemoryWrite('addLongTermFact')) return false;
                     if (!content || typeof content !== 'string' || !content.trim()) return;
                     const entry = {
                         category: category || '通用',
@@ -2037,6 +2137,7 @@
 
                 /** 波动记忆 - 添加计划 */
                 addPlan(type, content) {
+                    if (!this._guardMemoryWrite('addPlan')) return false;
                     if (!content || typeof content !== 'string' || !content.trim()) return;
                     const entry = {
                         type: type || '其他',
@@ -2060,6 +2161,7 @@
 
                 /** 波动记忆 - 添加临时事件 */
                 addTemporaryEvent(content, estimatedExpiry) {
+                    if (!this._guardMemoryWrite('addTemporaryEvent')) return false;
                     if (!content || typeof content !== 'string' || !content.trim()) return;
                     debugLog('📝 开始添加临时事件:', { content, estimatedExpiry });
                     const entry = {
@@ -2082,6 +2184,7 @@
 
                 /** 兼容解析 AI 可见回复中的自然语言记忆确认 */
                 parseVisibleMemoryUpdate(content) {
+                    if (!this._guardMemoryWrite('parseVisibleMemoryUpdate')) return false;
                     if (!content || typeof content !== 'string') return false;
                     const text = content.trim();
                     if (!/已存入波动记忆|临时事件/.test(text)) return false;
@@ -2116,6 +2219,7 @@
 
                 /** 删除波动记忆中的计划 */
                 removePlan(indexOrContent) {
+                    if (!this._guardMemoryWrite('removePlan')) return false;
                     if (typeof indexOrContent === 'number') {
                         this.volatile.plans.splice(indexOrContent, 1);
                     } else {
@@ -2128,6 +2232,7 @@
 
                 /** 删除波动记忆中的临时事件 */
                 removeTemporaryEvent(indexOrContent) {
+                    if (!this._guardMemoryWrite('removeTemporaryEvent')) return false;
                     if (typeof indexOrContent === 'number') {
                         this.volatile.temporaryEvents.splice(indexOrContent, 1);
                     } else {
@@ -2174,6 +2279,7 @@
                 }
 
                 removeShortTerm(target) {
+                    if (!this._guardMemoryWrite('removeShortTerm')) return false;
                     if (typeof target === 'number') {
                         this.shortTerm.entries.splice(target, 1);
                     } else {
@@ -2185,6 +2291,7 @@
                 }
 
                 removeBasicInfo(target) {
+                    if (!this._guardMemoryWrite('removeBasicInfo')) return false;
                     const targets = Array.isArray(target) ? target : [target];
                     targets.forEach(item => {
                         if (typeof item === 'string') {
@@ -2222,6 +2329,7 @@
                 }
 
                 removeLongTermMemory(target) {
+                    if (!this._guardMemoryWrite('removeLongTermMemory')) return false;
                     const targets = Array.isArray(target) ? target : [target];
                     targets.forEach(item => {
                         const scope = item && typeof item === 'object'
@@ -2257,6 +2365,7 @@
                 }
 
                 removeVolatileMemory(target) {
+                    if (!this._guardMemoryWrite('removeVolatileMemory')) return false;
                     const targets = Array.isArray(target) ? target : [target];
                     targets.forEach(item => {
                         const scope = item && typeof item === 'object'
@@ -2277,6 +2386,7 @@
                 }
 
                 removeMemory(target) {
+                    if (!this._guardMemoryWrite('removeMemory')) return false;
                     const targets = Array.isArray(target) ? target : [target];
                     targets.forEach(item => {
                         const scope = item && typeof item === 'object'
@@ -2365,6 +2475,7 @@
                 }
 
                 updateMemory(target, updates) {
+                    if (!this._guardMemoryWrite('updateMemory')) return false;
                     if (!target || !updates) return { updated: false, count: 0, reason: 'missing-target-or-updates' };
                     const targets = Array.isArray(target) ? target : [target];
                     let count = 0;
@@ -2399,6 +2510,7 @@
 
                 /** 用户否定时修改记忆 */
                 handleUserNegation(negatedTopic) {
+                    if (!this._guardMemoryWrite('handleUserNegation')) return false;
                     // 在短期记忆中查找并移除相关内容
                     this.shortTerm.entries = this.shortTerm.entries.filter(e =>
                         !this._matchesMemoryTarget(e, negatedTopic)
@@ -2594,6 +2706,7 @@
 
                 /** 清空所有记忆 */
                 clearAll() {
+                    if (!this._guardMemoryWrite('clearAll')) return false;
                     this.shortTerm = { entries: [] };
                     this.longTerm = { expenses: [], preferences: [], basicInfo: { age: null, job: null,
                             pets: [], tools: [] }, aiLearning: [], facts: [] };
@@ -2621,8 +2734,26 @@
                     return extractMemoryUpdatePayload(content);
                 }
 
-                _applyMemoryData(memData) {
-                    if (!memData) return;
+                _applyMemoryData(memData, source = 'API') {
+                    if (!memData) return false;
+                    return this._withMemoryWriteAccess(
+                        source,
+                        () => this._applyMemoryDataAuthorized(memData),
+                        MEMORY_WRITE_TOKEN
+                    );
+                }
+
+                _applyMemoryDataAuthorized(memData) {
+                    if (!this._guardMemoryWrite('_applyMemoryDataAuthorized')) return false;
+                    if (memData.clearAll === true) {
+                        this.clearAll();
+                        return true;
+                    }
+                    if (memData.maintenance && memData.maintenance.cleanExpired) {
+                        this._cleanExpired();
+                        this._saveAll();
+                        return true;
+                    }
 
                     const asArray = value => Array.isArray(value) ? value : [value];
                     const textOf = item => {
@@ -2638,7 +2769,15 @@
                         if (!info || typeof info !== 'object') return;
                         Object.keys(info).forEach(key => {
                             if (info[key] !== undefined && info[key] !== null) {
-                                this.updateBasicInfo(key, info[key]);
+                                if (key === 'pets' && Array.isArray(info[key])) {
+                                    info[key].forEach(pet => {
+                                        if (pet && pet.name) this.updateBasicInfo('pets', { ...pet, action: 'add' });
+                                    });
+                                } else if (key === 'tools' && Array.isArray(info[key])) {
+                                    info[key].forEach(tool => this.updateBasicInfo('tools', { tool, action: 'add' }));
+                                } else {
+                                    this.updateBasicInfo(key, info[key]);
+                                }
                             }
                         });
                     };
@@ -2665,7 +2804,10 @@
                     }
 
                     if (memData.shortTerm) {
-                        asArray(memData.shortTerm).forEach(item => {
+                        const shortItems = Array.isArray(memData.shortTerm.entries)
+                            ? memData.shortTerm.entries
+                            : asArray(memData.shortTerm);
+                        shortItems.forEach(item => {
                             const content = textOf(item);
                             if (content) this.addShortTerm(content, 'ai_extracted');
                         });
@@ -4206,6 +4348,7 @@
             }
 
             function commitTurnClosedLoop(userMsg, aiMsg, options = {}) {
+                const topicCountBeforeCommit = topicCards.length;
                 const userMessage = ensureConversationMessageId(userMsg);
                 const aiMessage = aiMsg ? ensureConversationMessageId(aiMsg) : null;
 
@@ -4217,6 +4360,10 @@
                 compactConversationHistory();
                 persistChatHistory();
                 updateMemoryPanel();
+
+                if (topicCards.length !== topicCountBeforeCommit) {
+                    memoryViolation('commitTurnClosedLoop topic write', 'topic');
+                }
 
                 const storage = summarizeMemoryStorage();
                 const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
@@ -4382,6 +4529,7 @@
 
             function applyLocalDeleteIntent(userText) {
                 if (hasExplicitLocalDeleteIntent(userText) || hasLocalDeleteTarget(userText)) {
+                    memoryViolation('applyLocalDeleteIntent', 'UI');
                     showToast('记忆删除将由 AI 回复中的 MEMORY_UPDATE 处理');
                     return { handled: false, deleted: false, reason: 'memory-write-disabled' };
                 }
@@ -4402,7 +4550,7 @@
 
                     const before = countAllMemoryEntries();
                     const selectedLabel = selectedMemory.label;
-                    memorySystem.removeMemory(selectedTarget);
+                    memoryViolation('applyLocalDeleteIntent selected memory write', 'UI');
                     const after = countAllMemoryEntries();
                     updateMemoryPanel();
 
@@ -4418,10 +4566,7 @@
                 }
 
                 const before = countAllMemoryEntries();
-                memorySystem.removeMemory({
-                    scope: inferDeleteScope(userText),
-                    content: target,
-                });
+                memoryViolation('applyLocalDeleteIntent inferred memory write', 'UI');
                 const after = countAllMemoryEntries();
                 updateMemoryPanel();
 
@@ -4484,6 +4629,7 @@
                 }
 
                 const type = inferSaveMemoryType(userText, target);
+                memoryViolation('applyLocalSaveIntent', 'UI');
                 showToast('记忆写入将由 AI 回复中的 MEMORY_UPDATE 处理');
                 return { handled: false, saved: false, target, type, reason: 'memory-write-disabled' };
             }
@@ -4507,6 +4653,7 @@
                 if (!looksLikeSelectedMemoryUpdateRequest(userText)) {
                     return { handled: false, updated: false, reason: 'no-update-intent' };
                 }
+                memoryViolation('applyLocalUpdateIntent', 'UI');
                 showToast('记忆修改将由 AI 回复中的 MEMORY_UPDATE 处理');
                 return { handled: false, updated: false, reason: 'memory-write-disabled' };
                 if (!selectedMemory || !selectedMemory.target) {
@@ -4522,7 +4669,7 @@
                     return { handled: true, updated: false, reason: 'missing-update-content', message };
                 }
 
-                const result = memorySystem.updateMemory(selectedMemory.target, { content });
+                const result = { updated: memoryViolation('applyLocalUpdateIntent memory write', 'UI') };
                 if (result.updated) {
                     const oldLabel = selectedMemory.label;
                     updateMemoryPanel();
@@ -5291,7 +5438,7 @@
             function clearChatHistory() {
                 conversationHistory = [];
                 conversationSummary = '';
-                topicCards = [];
+                topicCards = createGuardedTopicCards([]);
                 messagesContainer.innerHTML = '';
                 try {
                     localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
@@ -5830,8 +5977,7 @@
 
             // ==================== 记忆面板按钮 ====================
             btnCleanExpired.addEventListener('click', function() {
-                memorySystem._cleanExpired();
-                memorySystem._saveAll();
+                memorySystem._applyMemoryData({ maintenance: { cleanExpired: true } }, 'UI/maintenance');
                 updateMemoryPanel();
                 showToast('已清理过期记忆');
             });
@@ -5929,143 +6075,13 @@
                         topicImported = mergeImportedTopicCards(imported.topicCards);
                         hasTopicChanges = hasTopicChanges || topicImported > 0;
 
-                        if (imported.shortTerm && imported.shortTerm.entries) {
-                            const existingShort = new Set(memorySystem.shortTerm.entries.map(e => e.content));
-                            imported.shortTerm.entries.forEach(entry => {
-                                if (!existingShort.has(entry.content)) {
-                                    memorySystem.shortTerm.entries.push(entry);
-                                    shortImported++;
-                                    existingShort.add(entry.content);
-                                }
-                            });
-                            if (memorySystem.shortTerm.entries.length > MAX_SHORT_TERM_ENTRIES) {
-                                memorySystem.shortTerm.entries.sort((a, b) => b.timestamp - a.timestamp);
-                                memorySystem.shortTerm.entries =
-                                    memorySystem.shortTerm.entries.slice(0, MAX_SHORT_TERM_ENTRIES);
-                            }
-                        }
+                        const memoryCountsBeforeImport = memorySystem.getDebugSnapshot();
+                        memorySystem._applyMemoryData(imported, 'UI/import');
 
-                        if (imported.longTerm) {
-                            if (imported.longTerm.expenses) {
-                                const existingExpenses = new Set(memorySystem.longTerm.expenses.map(e => 
-                                    e.dateStr + '-' + e.amount + '-' + e.description
-                                ));
-                                imported.longTerm.expenses.forEach(exp => {
-                                    const key = (exp.dateStr || '') + '-' + (exp.amount || '') + '-' + (exp.description || '');
-                                    if (!existingExpenses.has(key)) {
-                                        memorySystem.longTerm.expenses.push(exp);
-                                        longImported++;
-                                        existingExpenses.add(key);
-                                    }
-                                });
-                            }
-                            if (imported.longTerm.preferences) {
-                                imported.longTerm.preferences.forEach(pref => {
-                                    const dup = memorySystem.longTerm.preferences.find(p =>
-                                        p.category === pref.category && p.detail === pref.detail
-                                    );
-                                    if (!dup) {
-                                        memorySystem.longTerm.preferences.push(pref);
-                                        longImported++;
-                                    }
-                                });
-                            }
-                            if (imported.longTerm.basicInfo) {
-                                Object.keys(imported.longTerm.basicInfo).forEach(key => {
-                                    if (imported.longTerm.basicInfo[key] !== null && 
-                                        imported.longTerm.basicInfo[key] !== undefined) {
-                                        if (Array.isArray(imported.longTerm.basicInfo[key])) {
-                                            if (!memorySystem.longTerm.basicInfo[key]) {
-                                                memorySystem.longTerm.basicInfo[key] = [];
-                                            }
-                                            imported.longTerm.basicInfo[key].forEach(item => {
-                                                if (key === 'pets' && item && item.name) {
-                                                    const exists = memorySystem.longTerm.basicInfo.pets.find(p =>
-                                                        p.name === item.name && p.type === (item.type || '未知')
-                                                    );
-                                                    if (!exists) {
-                                                        memorySystem.longTerm.basicInfo.pets.push({
-                                                            name: item.name,
-                                                            type: item.type || '未知'
-                                                        });
-                                                        longImported++;
-                                                    }
-                                                } else if (key === 'tools' && typeof item === 'string') {
-                                                    if (!memorySystem.longTerm.basicInfo.tools.includes(item)) {
-                                                        memorySystem.longTerm.basicInfo.tools.push(item);
-                                                        longImported++;
-                                                    }
-                                                } else if (!memorySystem.longTerm.basicInfo[key].includes(item)) {
-                                                    memorySystem.longTerm.basicInfo[key].push(item);
-                                                    longImported++;
-                                                }
-                                            });
-                                        } else if (!memorySystem.longTerm.basicInfo[key]) {
-                                            memorySystem.longTerm.basicInfo[key] = imported.longTerm.basicInfo[key];
-                                            longImported++;
-                                        }
-                                    }
-                                });
-                            }
-                            if (imported.longTerm.aiLearning) {
-                                imported.longTerm.aiLearning.forEach(learn => {
-                                    const dup = memorySystem.longTerm.aiLearning.find(l =>
-                                        l.topic === learn.topic
-                                    );
-                                    if (!dup) {
-                                        memorySystem.longTerm.aiLearning.push(learn);
-                                        longImported++;
-                                    }
-                                });
-                            }
-                            if (imported.longTerm.facts) {
-                                if (!Array.isArray(memorySystem.longTerm.facts)) memorySystem.longTerm.facts = [];
-                                imported.longTerm.facts.forEach(fact => {
-                                    if (!fact || !fact.content) return;
-                                    const dup = memorySystem.longTerm.facts.find(f =>
-                                        f.category === fact.category && f.content === fact.content
-                                    );
-                                    if (!dup) {
-                                        memorySystem.longTerm.facts.push({
-                                            category: fact.category || '通用',
-                                            content: fact.content,
-                                            timestamp: fact.timestamp || Date.now(),
-                                        });
-                                        longImported++;
-                                    }
-                                });
-                            }
-                        }
-
-                        if (imported.volatile) {
-                            if (imported.volatile.plans) {
-                                imported.volatile.plans.forEach(plan => {
-                                    const dup = memorySystem.volatile.plans.find(p =>
-                                        p.type === plan.type && p.content === plan.content
-                                    );
-                                    if (!dup) {
-                                        memorySystem.volatile.plans.push(plan);
-                                        volatileImported++;
-                                    }
-                                });
-                            }
-                            if (imported.volatile.temporaryEvents) {
-                                imported.volatile.temporaryEvents.forEach(evt => {
-                                    if (!evt || !evt.content) return;
-                                    const dup = memorySystem.volatile.temporaryEvents.find(e =>
-                                        e.content === evt.content
-                                    );
-                                    if (!dup) {
-                                        memorySystem.volatile.temporaryEvents.push({
-                                            content: evt.content,
-                                            createdAt: evt.createdAt || Date.now(),
-                                            estimatedExpiry: memorySystem._normalizeExpiry(evt.estimatedExpiry),
-                                        });
-                                        volatileImported++;
-                                    }
-                                });
-                            }
-                        }
+                        const memoryCountsAfterImport = memorySystem.getDebugSnapshot();
+                        shortImported = Math.max(0, memoryCountsAfterImport.shortTerm - memoryCountsBeforeImport.shortTerm);
+                        longImported = Math.max(0, memoryCountsAfterImport.longTerm - memoryCountsBeforeImport.longTerm);
+                        volatileImported = Math.max(0, memoryCountsAfterImport.volatile - memoryCountsBeforeImport.volatile);
 
                         if (imported.userProfile && imported.userProfile.sections) {
                             userProfileLoadFailed = false;
@@ -6091,7 +6107,6 @@
                         if (hasChatChanges || hasSummaryChanges || hasTopicChanges) {
                             persistChatHistory();
                         }
-                        memorySystem._saveAll();
                         updateMemoryPanel();
 
                         if (hasChatChanges) {
@@ -6130,7 +6145,7 @@
 
             btnClearAllMem.addEventListener('click', function() {
                 if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
-                    memorySystem.clearAll();
+                    memorySystem._applyMemoryData({ clearAll: true }, 'UI/clear');
                     stateEngine.clear();
                     if (topicMemoryManager) topicMemoryManager.clear();
                     memoryUserProfile = emptyUserProfile();
@@ -6222,11 +6237,11 @@
                             const parsed = parsedResult.value;
                             if (Array.isArray(parsed) && parsed.length > 0) {
                                 conversationHistory = parsed;
-                                topicCards = [];
+                                topicCards = createGuardedTopicCards([]);
                             } else if (parsed && Array.isArray(parsed.messages)) {
                                 conversationHistory = parsed.messages;
                                 conversationSummary = '';
-                                topicCards = [];
+                                topicCards = createGuardedTopicCards([]);
                             }
                             if (conversationHistory.length > 0) {
                                 normalizeConversationHistoryIds();
@@ -6256,8 +6271,7 @@
 
                 // 定期清理过期记忆
                 setInterval(() => {
-                    memorySystem._cleanExpired();
-                    memorySystem._saveAll();
+                    memorySystem._applyMemoryData({ maintenance: { cleanExpired: true } }, 'system/maintenance');
                     updateMemoryPanel();
                 }, 60000);
 
