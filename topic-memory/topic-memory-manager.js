@@ -1,6 +1,6 @@
 (function() {
     const DEFAULT_STATE = {
-        version: 1,
+        version: 2,
         topics: [],
         marker: {
             lastProcessedMessageId: null,
@@ -14,6 +14,8 @@
         pendingCount: 0,
         lastRun: null,
         lastError: '',
+        lastErrorType: '',
+        errorLog: [],
     };
 
     function clone(value) {
@@ -38,13 +40,29 @@
         };
     }
 
+    function cleanAIJSON(text) {
+        const source = String(text || '')
+            .replace(/^\uFEFF/, '')
+            .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+            .trim();
+        const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        let cleaned = (fenced ? fenced[1] : source).trim();
+        const objectStart = cleaned.indexOf('{');
+        const arrayStart = cleaned.indexOf('[');
+        const start = objectStart < 0 ? arrayStart : (arrayStart < 0 ? objectStart : Math.min(objectStart, arrayStart));
+        if (start > 0) cleaned = cleaned.slice(start);
+        const objectEnd = cleaned.lastIndexOf('}');
+        const arrayEnd = cleaned.lastIndexOf(']');
+        const end = Math.max(objectEnd, arrayEnd);
+        if (end >= 0) cleaned = cleaned.slice(0, end + 1);
+        return cleaned
+            .replace(/,\s*([}\]])/g, '$1')
+            .trim();
+    }
+
     function extractJSON(text) {
         if (!text) throw new Error('DeepSeek 返回为空');
-        const trimmed = String(text).trim()
-            .replace(/^```json\s*/i, '')
-            .replace(/^```\s*/i, '')
-            .replace(/```$/i, '')
-            .trim();
+        const trimmed = cleanAIJSON(text);
         try {
             return JSON.parse(trimmed);
         } catch (firstError) {
@@ -65,12 +83,22 @@
     }
 
     function compactTopic(topic) {
+        const facts = Array.isArray(topic.facts)
+            ? topic.facts.map(fact => String(fact || '').trim()).filter(Boolean).slice(0, 8)
+            : [];
+        const messageIds = Array.isArray(topic.messageIds) ? Array.from(new Set(topic.messageIds)).slice(0, 160) : [];
         return {
-            id: topic.id,
-            title: topic.title,
+            topic_id: topic.topic_id || topic.id,
+            id: topic.topic_id || topic.id,
+            category: String(topic.category || '其他').trim().slice(0, 20),
+            title: String(topic.title || '未命名话题').trim().slice(0, 32),
+            summary: String(topic.summary || '').trim().slice(0, 140),
+            facts,
             startTime: topic.startTime || topic.createdAt || topic.updatedAt || Date.now(),
-            updatedAt: topic.updatedAt || Date.now(),
-            messageIds: Array.isArray(topic.messageIds) ? topic.messageIds.slice(0, 80) : [],
+            updated_at: topic.updated_at || topic.updatedAt || Date.now(),
+            updatedAt: topic.updated_at || topic.updatedAt || Date.now(),
+            message_count: Math.max(Number(topic.message_count) || 0, messageIds.length),
+            messageIds,
             chain: Array.isArray(topic.chain)
                 ? topic.chain.map(node => ({
                     id: node.id,
@@ -83,7 +111,10 @@
 
     class TopicMemoryManager {
         constructor(options = {}) {
-            this.storageKey = options.storageKey || 'mem_topic_memory';
+            this.storageKey = options.storageKey || 'topic_index';
+            this.legacyStorageKey = options.legacyStorageKey || 'mem_topic_memory';
+            this.backupKey = options.backupKey || 'last_good_backup';
+            this.errorLogKey = options.errorLogKey || 'memory_error_log';
             this.callApi = options.callApi;
             this.hasApiKey = options.hasApiKey || (() => true);
             this.isBusy = options.isBusy || (() => false);
@@ -94,17 +125,29 @@
             this.maxTopics = options.maxTopics || 60;
             this.timer = null;
             this.processing = false;
+            this.loadFailed = false;
             this.state = this.load();
+            if (!this.loadFailed) this.save();
             this.notify();
         }
 
         load() {
             try {
-                const raw = localStorage.getItem(this.storageKey);
+                const raw = localStorage.getItem(this.storageKey) || localStorage.getItem(this.legacyStorageKey);
                 if (!raw) return clone(DEFAULT_STATE);
                 const parsed = JSON.parse(raw);
                 return this.normalizeState(parsed);
             } catch (error) {
+                this.logError('topic_index_load', error);
+                try {
+                    const legacyRaw = localStorage.getItem(this.legacyStorageKey);
+                    if (legacyRaw) return this.normalizeState(JSON.parse(legacyRaw));
+                    const backup = JSON.parse(localStorage.getItem(this.backupKey) || '{}');
+                    if (backup.topic_index && backup.topic_index.value) {
+                        return this.normalizeState(backup.topic_index.value);
+                    }
+                } catch (backupError) { /* preserve the corrupt source */ }
+                this.loadFailed = true;
                 return clone(DEFAULT_STATE);
             }
         }
@@ -122,7 +165,39 @@
         }
 
         save() {
-            localStorage.setItem(this.storageKey, JSON.stringify(this.state));
+            const next = JSON.stringify(this.state);
+            const current = localStorage.getItem(this.storageKey);
+            if (current) this.writeBackup('topic_index', current);
+            localStorage.setItem(this.storageKey, next);
+            localStorage.setItem(this.legacyStorageKey, next);
+        }
+
+        writeBackup(type, value) {
+            try {
+                const existing = JSON.parse(localStorage.getItem(this.backupKey) || '{}');
+                existing[type] = { saved_at: Date.now(), value: typeof value === 'string' ? JSON.parse(value) : value };
+                localStorage.setItem(this.backupKey, JSON.stringify(existing));
+            } catch (error) { /* backup must never block the primary save */ }
+        }
+
+        logError(type, error, raw = '') {
+            const entry = {
+                type,
+                message: error && error.message ? error.message : String(error),
+                at: Date.now(),
+                raw: String(raw || '').slice(0, 500),
+            };
+            try {
+                const stored = JSON.parse(localStorage.getItem(this.errorLogKey) || '[]');
+                localStorage.setItem(this.errorLogKey, JSON.stringify([entry].concat(Array.isArray(stored) ? stored : []).slice(0, 50)));
+            } catch (ignore) { /* logging failure must not interrupt organizing */ }
+            if (this.state) {
+                this.state.lastError = entry.message;
+                this.state.lastErrorType = type;
+                this.state.errorLog = [entry].concat(this.state.errorLog || []).slice(0, 12);
+            }
+            console.error('[TopicMemoryManager][' + type + ']', entry);
+            return entry;
         }
 
         notify() {
@@ -184,7 +259,7 @@
                 return;
             }
 
-            const startIndex = this.findStartIndex(normalized);
+            const startIndex = options.force ? 0 : this.findStartIndex(normalized);
             this.state.pendingCount = Math.max(0, normalized.length - startIndex);
             this.setStatus('queued', `已排队 ${this.state.pendingCount} 条消息`);
 
@@ -225,7 +300,7 @@
                 return;
             }
 
-            const startIndex = this.findStartIndex(messages);
+            const startIndex = options.force ? 0 : this.findStartIndex(messages);
             const pendingMessages = messages.slice(startIndex);
             if (pendingMessages.length === 0) {
                 this.state.pendingCount = 0;
@@ -235,6 +310,8 @@
 
             this.processing = true;
             this.state.pendingCount = pendingMessages.length;
+            this.state.lastError = '';
+            this.state.lastErrorType = '';
             this.setStatus('processing', `正在整理 ${pendingMessages.length} 条消息`);
 
             try {
@@ -246,7 +323,14 @@
                         Math.max(0, batchEnd - this.maxContextMessages),
                         batchEnd
                     );
-                    const batchProcessed = await this.processBatch(context, batch);
+                    let batchProcessed = 0;
+                    try {
+                        batchProcessed = await this.processBatch(context, batch);
+                    } catch (error) {
+                        this.logError(isJSONParseError(error) ? 'topic_index_json_parse' : 'topic_index_organize', error);
+                        this.applyFallbackTopics(batch);
+                        batchProcessed = batch.length;
+                    }
                     processedCount += batchProcessed;
                     this.state.pendingCount = Math.max(0, pendingMessages.length - processedCount);
                     this.setStatus(
@@ -255,15 +339,21 @@
                     );
                 }
                 this.state.pendingCount = 0;
-                this.state.lastError = '';
                 this.state.lastRun = {
                     at: Date.now(),
                     processed: pendingMessages.length,
                     topics: this.state.topics.length,
                 };
-                this.setStatus('idle', `完成整理 ${pendingMessages.length} 条消息`);
+                this.setStatus(
+                    'idle',
+                    this.state.lastErrorType
+                        ? `完成整理 ${pendingMessages.length} 条消息（部分使用本地兜底）`
+                        : `完成整理 ${pendingMessages.length} 条消息`
+                );
             } catch (error) {
                 this.state.lastError = error && error.message ? error.message : String(error);
+                this.state.lastErrorType = isJSONParseError(error) ? 'topic_index_json_parse' : 'topic_index_organize';
+                this.logError(this.state.lastErrorType, error);
                 this.setStatus('error', '整理失败：' + this.state.lastError);
             } finally {
                 this.processing = false;
@@ -295,6 +385,53 @@
             }
         }
 
+        applyFallbackTopics(messages, options = {}) {
+            const groups = new Map();
+            (messages || []).forEach(message => {
+                if (!message || !message.content) return;
+                const category = this.inferCategory(message.content);
+                if (!groups.has(category)) groups.set(category, []);
+                groups.get(category).push(message);
+            });
+            const topics = Array.from(groups.entries()).map(([category, items]) => {
+                const first = items.find(item => item.role === 'user') || items[0];
+                const summary = String(first.content || '').replace(/\s+/g, ' ').slice(0, 100);
+                const sameCategory = (this.state.topics || []).slice().reverse().find(topic => topic.category === category);
+                return {
+                    topic_id: sameCategory ? sameCategory.id : ('topic_archive_' + category),
+                    category,
+                    title: this.inferTitle(summary, category),
+                    summary,
+                    facts: items.filter(item => item.role === 'user').map(item => String(item.content).replace(/\s+/g, ' ').slice(0, 100)).slice(0, 5),
+                    startTime: Math.min(...items.map(item => item.timestamp || Date.now())),
+                    updated_at: Math.max(...items.map(item => item.timestamp || Date.now())),
+                    messageIds: items.map(item => item.id),
+                };
+            });
+            this.state.topics = this.mergeTopics(this.state.topics, topics).slice(-this.maxTopics);
+            const last = messages[messages.length - 1];
+            if (last && options.advanceMarker !== false) {
+                this.state.marker = { lastProcessedMessageId: last.id, lastProcessedAt: Date.now() };
+            }
+            this.save();
+            this.notify();
+        }
+
+        inferCategory(text) {
+            const value = String(text || '');
+            if (/报错|错误|bug|修复|调试|JSON|代码/i.test(value)) return '代码与调试';
+            if (/项目|功能|开发|版本|状态|进度/i.test(value)) return '项目进展';
+            if (/偏好|喜欢|不要|习惯|风格/i.test(value)) return '用户偏好';
+            if (/计划|目标|下一步|待办/i.test(value)) return '计划与目标';
+            if (/记忆|话题|上下文/i.test(value)) return '记忆系统';
+            return '其他';
+        }
+
+        inferTitle(text, category) {
+            const clean = String(text || '').replace(/[\r\n]+/g, ' ').replace(/^[，。！？、\s]+|[，。！？、\s]+$/g, '');
+            return (clean.slice(0, 24) || category || '未命名话题');
+        }
+
         buildPrompt(allMessages, newMessages) {
             const existingTopics = this.state.topics
                 .slice(-20)
@@ -306,13 +443,14 @@
                     role: 'system',
                     content: [
                         '你是对话话题记忆整理器。只输出 JSON，不要输出 Markdown、解释或 HTML 注释。',
-                        '任务：检测同类话题对话，将新消息归入已有话题或创建新话题，并维护按时间顺序排列的因果链。',
+                        '任务：维护去重的话题索引。新消息必须优先合并到语义相同的已有话题，只有确实不同才新建。',
                         '不要保存完整消息内容，只能引用 messageIds。',
                         '每个 chain 节点只写概述标签，不写时间；节点顺序代表因果时间顺序。',
                         '如果消息属于测试、纠错、计划、偏好、工具问题等，请给出简短明确的 title。',
                         'title 和 label 必须简短，避免引号、换行和列表符号。',
+                        'category 优先沿用已有话题检测分类；summary 不超过 60 字；facts 最多 5 条，每条不超过 50 字。',
                         '最多返回 8 个 topics；每个 topic 最多 6 个 chain 节点。',
-                        '输出 schema：{"topics":[{"id":"topic_x","title":"话题名","startTime":毫秒时间戳,"updatedAt":毫秒时间戳,"messageIds":["msg"],"chain":[{"id":"node_x","label":"概述","messageIds":["msg"]}]}],"marker":{"lastProcessedMessageId":"msg","lastProcessedAt":毫秒时间戳}}',
+                        '输出 schema：{"topics":[{"topic_id":"topic_x","category":"分类","title":"短标题","summary":"短摘要","facts":["关键事实"],"updated_at":毫秒时间戳,"messageIds":["msg"],"chain":[{"id":"node_x","label":"概述","messageIds":["msg"]}]}],"marker":{"lastProcessedMessageId":"msg","lastProcessedAt":毫秒时间戳}}',
                         '可以复用已有 topic/node id；新建 id 用 topic_ 或 node_ 开头。',
                         '必须返回合法 JSON：所有数组元素之间必须有逗号，字符串必须用双引号并正确转义。',
                     ].join('\n'),
@@ -331,6 +469,9 @@
         }
 
         applyModelResult(result, messages) {
+            if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.topics)) {
+                throw new SyntaxError('话题索引 JSON schema 无效：缺少 topics 数组');
+            }
             const messageIdSet = new Set(messages.map(msg => msg.id));
             const incomingTopics = Array.isArray(result && result.topics) ? result.topics : [];
             const sanitized = incomingTopics
@@ -366,8 +507,11 @@
             );
 
             return compactTopic({
-                id: topic.id || safeId('topic'),
+                topic_id: topic.topic_id || topic.id || '',
+                category: String(topic.category || this.inferCategory(topic.title || topic.summary || '')).trim().slice(0, 20),
                 title: String(topic.title || '').trim().slice(0, 40),
+                summary: String(topic.summary || '').trim().slice(0, 140),
+                facts: Array.isArray(topic.facts) ? topic.facts : [],
                 startTime: Number(topic.startTime) || now,
                 updatedAt: Number(topic.updatedAt) || now,
                 messageIds,
@@ -385,14 +529,20 @@
         mergeTopics(existing, incoming) {
             const byId = new Map();
             (existing || []).forEach(topic => {
-                if (topic && topic.id) byId.set(topic.id, compactTopic(topic));
+                const clean = compactTopic(topic);
+                if (clean && clean.id) byId.set(clean.id, clean);
             });
 
             (incoming || []).forEach(topic => {
                 if (!topic) return;
-                const clean = compactTopic(topic);
-                const prior = byId.get(clean.id);
+                let clean = compactTopic(topic);
+                let prior = clean.id ? byId.get(clean.id) : null;
                 if (!prior) {
+                    prior = Array.from(byId.values()).find(candidate => this.topicSimilarity(candidate, clean) >= 0.62) || null;
+                    if (prior) clean = { ...clean, id: prior.id, topic_id: prior.id };
+                }
+                if (!prior) {
+                    if (!clean.id) clean.id = clean.topic_id = safeId('topic');
                     byId.set(clean.id, clean);
                     return;
                 }
@@ -425,12 +575,41 @@
                     ...clean,
                     startTime: Math.min(prior.startTime || clean.startTime, clean.startTime || prior.startTime),
                     updatedAt: Math.max(prior.updatedAt || 0, clean.updatedAt || 0, Date.now()),
+                    updated_at: Math.max(prior.updated_at || 0, clean.updated_at || 0, Date.now()),
+                    summary: clean.summary || prior.summary,
+                    facts: this.mergeFacts(prior.facts, clean.facts),
+                    message_count: Math.max(prior.message_count || 0, clean.message_count || 0, messageIds.length),
                     messageIds,
                     chain: Array.from(nodeMap.values()),
                 }));
             });
 
             return Array.from(byId.values());
+        }
+
+        mergeFacts(left, right) {
+            const result = [];
+            (left || []).concat(right || []).forEach(fact => {
+                const text = String(fact || '').trim().slice(0, 100);
+                if (text && !result.some(existing => this.textSimilarity(existing, text) > 0.72)) result.push(text);
+            });
+            return result.slice(-8);
+        }
+
+        textSimilarity(a, b) {
+            const left = new Set(String(a || '').toLowerCase().replace(/\s+/g, '').split(''));
+            const right = new Set(String(b || '').toLowerCase().replace(/\s+/g, '').split(''));
+            if (!left.size || !right.size) return 0;
+            let common = 0;
+            left.forEach(char => { if (right.has(char)) common += 1; });
+            return common / Math.max(left.size, right.size);
+        }
+
+        topicSimilarity(a, b) {
+            const categoryBonus = a.category && b.category && a.category === b.category ? 0.2 : 0;
+            const titleScore = this.textSimilarity(a.title, b.title);
+            const summaryScore = this.textSimilarity(a.summary || a.title, b.summary || b.title);
+            return Math.min(1, categoryBonus + titleScore * 0.5 + summaryScore * 0.3);
         }
     }
 
