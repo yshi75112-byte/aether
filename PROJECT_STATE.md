@@ -1,6 +1,10 @@
-当前版本：0.8
+当前版本：0.9
 
 本次修改：
+- 实现 topic-index-json-parse：TopicMemoryManager 可清洗并修复代码围栏、前后说明、尾逗号、对象字段漏逗号、裸键和字符串内原始换行
+- 解析成功完整接入 processBatch → applyModelResult → save → topic_index / mem_topic_memory 主链路
+- 不可修复的模型输出继续分类为 topic_index_json_parse，保留已有话题并使用本地 fallback；原始响应截断写入 memory_error_log
+- Service Worker 缓存升级至 aether-pwa-v4，确保 PWA 获取新版 topic-memory-manager.js
 - Memory 写入收敛为唯一主链路：sendMessage → callDeepSeekAPI → parseAIResponseMemoryUpdate → memorySystem._applyMemoryData → memorySystem._saveAll
 - 禁用本地 applyLocalSaveIntent / applyLocalUpdateIntent / applyLocalDeleteIntent 对 memory 的直接写入
 - 禁用用户输入兜底 shortTerm 写入与 AI 回复摘要 shortTerm 写入
@@ -10,6 +14,10 @@
 - memorySystem.parseMemoryUpdate 改为只解析 wrapper；extractMemoryUpdatePayload 只解析；processMemoryUpdate 保留为兼容 wrapper
 
 验证结果：
+- topic-index 可修复模型 JSON 能正常写入话题并推进 marker，不产生解析错误
+- 不可修复/截断 JSON 不清空已有话题，记录 topic_index_json_parse 后进入本地 fallback
+- topic-memory-manager.js、service-worker.js、TEST_MEMORY_V2.js 均通过 Node 语法检查
+- TEST_MEMORY_V2.js 回归测试通过
 - 无 API Key 的本地记忆意图不写 mem_short_term / mem_long_term / mem_volatile
 - API MEMORY_UPDATE 可写入 memory
 - mem_topic_memory 可由 TopicMemoryManager 异步写入
@@ -24,3 +32,4 @@
 待测试：
 - Android Chrome
 - PWA模式
+- 浏览器环境运行 TEST_MEMORY_SYSTEM.js（该脚本依赖 window，不能直接由 Node 执行）
