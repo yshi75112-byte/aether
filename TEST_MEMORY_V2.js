@@ -14,16 +14,28 @@ async function testTopicIndex() {
     global.window = global;
     vm.runInThisContext(fs.readFileSync('./topic-memory/topic-memory-manager.js', 'utf8'));
 
-    const manager = new global.TopicMemoryManager({
-        debounceMs: 0,
-        hasApiKey: () => true,
-        isBusy: () => false,
-        callApi: async () => '{"topics":[{"topic_id":"broken" "title":"缺逗号"}]}',
-    });
     const messages = [
         { id: 'm1', role: 'user', content: '请修复记忆系统 JSON 报错', timestamp: 1 },
         { id: 'm2', role: 'assistant', content: '正在修复', timestamp: 2 },
     ];
+    const repairManager = new global.TopicMemoryManager({
+        debounceMs: 0,
+        hasApiKey: () => true,
+        isBusy: () => false,
+        callApi: async () => '说明文字```json\n{topics:[{"topic_id":"topic_repaired" "title":"解析修复","summary":"第一行\n第二行","messageIds":["m1"],},],marker:{"lastProcessedMessageId":"m2","lastProcessedAt":2,},}\n```',
+    });
+    await repairManager.process(messages, { force: true });
+    const repairedState = repairManager.getState();
+    assert(repairedState.topics.some(topic => topic.id === 'topic_repaired'), '应修复常见模型 JSON 格式瑕疵');
+    assert.strictEqual(repairedState.marker.lastProcessedMessageId, 'm2', '修复后的结果应进入 applyModelResult');
+    assert.strictEqual(repairedState.lastErrorType, '', '可修复 JSON 不应记录解析错误');
+
+    const manager = new global.TopicMemoryManager({
+        debounceMs: 0,
+        hasApiKey: () => true,
+        isBusy: () => false,
+        callApi: async () => '{"topics":[{"topic_id":"broken","title":"内容被截断"',
+    });
     manager.applyFallbackTopics(messages);
     const before = manager.getState().topics.length;
     manager.applyFallbackTopics(messages);

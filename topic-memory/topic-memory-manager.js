@@ -61,8 +61,17 @@
         };
     }
 
+    function getModelText(response) {
+        if (typeof response === 'string') return response;
+        if (response && typeof response.content === 'string') return response.content;
+        if (response && response.message && typeof response.message.content === 'string') {
+            return response.message.content;
+        }
+        return response == null ? '' : String(response);
+    }
+
     function cleanAIJSON(text) {
-        const source = String(text || '')
+        const source = getModelText(text)
             .replace(/^\uFEFF/, '')
             .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
             .trim();
@@ -81,19 +90,70 @@
             .trim();
     }
 
-    function extractJSON(text) {
-        if (!text) throw new Error('DeepSeek 返回为空');
-        const trimmed = cleanAIJSON(text);
-        try {
-            return JSON.parse(trimmed);
-        } catch (firstError) {
-            const start = trimmed.indexOf('{');
-            const end = trimmed.lastIndexOf('}');
-            if (start >= 0 && end > start) {
-                return JSON.parse(trimmed.slice(start, end + 1));
+    function escapeStringControls(text) {
+        let result = '';
+        let inString = false;
+        let escaped = false;
+        for (const char of String(text || '')) {
+            if (inString && (char === '\n' || char === '\r' || char === '\t')) {
+                result += char === '\n' ? '\\n' : (char === '\r' ? '\\r' : '\\t');
+                escaped = false;
+                continue;
             }
-            throw firstError;
+            result += char;
+            if (escaped) {
+                escaped = false;
+            } else if (char === '\\' && inString) {
+                escaped = true;
+            } else if (char === '"') {
+                inString = !inString;
+            }
         }
+        return result;
+    }
+
+    function repairAIJSON(text) {
+        return escapeStringControls(text)
+            .replace(/,\s*([}\]])/g, '$1')
+            .replace(/([{,]\s*)([A-Za-z_][\w-]*)(\s*:)/g, '$1"$2"$3')
+            .replace(/(["}\]\d])\s*(?="[^"\\]*(?:\\.[^"\\]*)*"\s*:)/g, '$1,')
+            .replace(/([}\]])\s*(?=[{[])/g, '$1,')
+            .trim();
+    }
+
+    function extractJSON(response) {
+        const raw = getModelText(response);
+        if (!raw.trim()) throw new SyntaxError('DeepSeek 返回为空，无法解析话题索引 JSON');
+
+        const cleaned = cleanAIJSON(raw);
+        const candidates = [cleaned];
+        const objectStart = cleaned.indexOf('{');
+        const objectEnd = cleaned.lastIndexOf('}');
+        if (objectStart >= 0 && objectEnd > objectStart) {
+            candidates.push(cleaned.slice(objectStart, objectEnd + 1));
+        }
+        const arrayStart = cleaned.indexOf('[');
+        const arrayEnd = cleaned.lastIndexOf(']');
+        if (arrayStart >= 0 && arrayEnd > arrayStart) {
+            candidates.push(cleaned.slice(arrayStart, arrayEnd + 1));
+        }
+
+        const attempts = [];
+        const uniqueCandidates = Array.from(new Set(candidates.filter(Boolean)));
+        for (const candidate of uniqueCandidates) {
+            for (const [source, value] of [['cleaned', candidate], ['repaired', repairAIJSON(candidate)]]) {
+                try {
+                    return JSON.parse(value);
+                } catch (error) {
+                    attempts.push(source + ': ' + (error && error.message ? error.message : String(error)));
+                }
+            }
+        }
+
+        const error = new SyntaxError('话题索引 JSON 解析失败：' + (attempts[attempts.length - 1] || '没有 JSON 内容'));
+        error.raw = raw;
+        error.attempts = attempts;
+        throw error;
     }
 
     function isJSONParseError(error) {
@@ -357,7 +417,11 @@
                     try {
                         batchProcessed = await this.processBatch(context, batch);
                     } catch (error) {
-                        this.logError(isJSONParseError(error) ? 'topic_index_json_parse' : 'topic_index_organize', error);
+                        this.logError(
+                            isJSONParseError(error) ? 'topic_index_json_parse' : 'topic_index_organize',
+                            error,
+                            error && error.raw
+                        );
                         this.applyFallbackTopics(batch);
                         batchProcessed = batch.length;
                     }
@@ -383,7 +447,7 @@
             } catch (error) {
                 this.state.lastError = error && error.message ? error.message : String(error);
                 this.state.lastErrorType = isJSONParseError(error) ? 'topic_index_json_parse' : 'topic_index_organize';
-                this.logError(this.state.lastErrorType, error);
+                this.logError(this.state.lastErrorType, error, error && error.raw);
                 this.setStatus('error', '整理失败：' + this.state.lastError);
             } finally {
                 this.processing = false;
