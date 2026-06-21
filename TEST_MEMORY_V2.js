@@ -123,10 +123,6 @@ function testMemoryWriteGuard() {
     storage.setItem('mem_long_term', '{"bypass":true}');
     assert.strictEqual(storage.getItem('mem_long_term'), null, '直接 localStorage 写核心 memory key 必须被拒绝');
 
-    const guardedTopics = context.createGuardedTopicCards([]);
-    assert.strictEqual(guardedTopics.push({ id: 'forbidden' }), 0, 'topicCards.push 必须被拒绝');
-    assert.strictEqual(guardedTopics.length, 0, 'topicCards.push 不得改变数组');
-
     manager._applyMemoryData({ preference: { category: '测试', detail: '唯一入口可写' } }, 'API');
     assert(JSON.parse(storage.getItem('mem_long_term')).preferences.some(item => item.detail === '唯一入口可写'),
         '_applyMemoryData 应是可落盘的唯一入口');
@@ -156,6 +152,12 @@ function testMemoryWriteGuard() {
         '启动时必须清理旧 mem_short_term 存储');
     assert(!/"shortTerm"\s*:|\bmemData\.shortTerm\b|\bremoveShortTerm\b/.test(html),
         '模型协议与导入链路不得继续接受短期记忆字段');
+    assert(!/\b(?:topicCards|createGuardedTopicCards|normalizeTopicCard|mergeImportedTopicCards|rebuildTopicCardsFromHistory)\b/.test(html),
+        '旧话题卡片运行时、导入和调试接口必须完全移除');
+    assert(!/id=["']memTopics["']|话题卡片/.test(html),
+        '旧话题卡片面板和文案必须完全移除');
+    assert(/new window\.TopicMemoryManager\(/.test(html) && /topicMemoryManager\.getState\(\)/.test(html),
+        '近期话题索引必须继续由 TopicMemoryManager 提供');
 }
 
 function testHistoryOverflowProfile() {

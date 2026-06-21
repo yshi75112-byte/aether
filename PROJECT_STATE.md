@@ -1,17 +1,18 @@
-当前版本：0.10
+当前版本：0.11
 
 本次修改：
 - 实现 topic-index-json-parse：TopicMemoryManager 可清洗并修复代码围栏、前后说明、尾逗号、对象字段漏逗号、裸键和字符串内原始换行
 - 解析成功完整接入 processBatch → applyModelResult → save → topic_index / mem_topic_memory 主链路
 - 不可修复的模型输出继续分类为 topic_index_json_parse，保留已有话题并使用本地 fallback；原始响应截断写入 memory_error_log
-- Service Worker 缓存升级至 aether-pwa-v5，确保 PWA 获取新版主程序与 topic-memory-manager.js
+- Service Worker 缓存升级至 aether-pwa-v6，确保 PWA 获取新版主程序与 topic-memory-manager.js
 - Memory 写入收敛为唯一主链路：sendMessage → callDeepSeekAPI → parseAIResponseMemoryUpdate → memorySystem._applyMemoryData → memorySystem._saveAll
 - 禁用本地 applyLocalSaveIntent / applyLocalUpdateIntent / applyLocalDeleteIntent 对 memory 的直接写入
 - 完整移除结构化短期记忆：删除运行时 API、UI、模型协议、上下文注入、导入导出和备份合并支持
 - 启动时清理旧 mem_short_term；旧备份中的 shortTerm 字段会被忽略，不再复活
-- 话题记忆保留并统一称为“近期话题”
+- 完整移除旧话题卡片：删除 topicCards 状态、UI、算法、导入导出、失败重试和调试接口
+- 旧备份中的 topicCards 字段会被忽略；话题记忆保留并统一称为“近期话题”
 - Topic 写入收敛为唯一主链路：TopicMemoryManager.enqueue → processBatch → applyModelResult → save → mem_topic_memory
-- 禁用 chat_history_cache.topicCards、本地 organizeTopicMessagesBatch、upsertTopicCardForTurn、rebuildTopicCardsFromHistory 的 topic 写入
+- 状态引擎改为直接读取 TopicMemoryManager 的索引话题，导入聊天后自动排队更新近期话题
 - Chat history 收敛为只保存 messages
 - memorySystem.parseMemoryUpdate 改为只解析 wrapper；extractMemoryUpdatePayload 只解析；processMemoryUpdate 保留为兼容 wrapper
 
