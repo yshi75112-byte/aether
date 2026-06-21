@@ -1,10 +1,10 @@
-当前版本：0.11
+当前版本：0.12
 
 本次修改：
 - 实现 topic-index-json-parse：TopicMemoryManager 可清洗并修复代码围栏、前后说明、尾逗号、对象字段漏逗号、裸键和字符串内原始换行
 - 解析成功完整接入 processBatch → applyModelResult → save → topic_index / mem_topic_memory 主链路
 - 不可修复的模型输出继续分类为 topic_index_json_parse，保留已有话题并使用本地 fallback；原始响应截断写入 memory_error_log
-- Service Worker 缓存升级至 aether-pwa-v6，确保 PWA 获取新版主程序与 topic-memory-manager.js
+- Service Worker 缓存升级至 aether-pwa-v7，确保 PWA 获取新版主程序与 topic-memory-manager.js
 - Memory 写入收敛为唯一主链路：sendMessage → callDeepSeekAPI → parseAIResponseMemoryUpdate → memorySystem._applyMemoryData → memorySystem._saveAll
 - 禁用本地 applyLocalSaveIntent / applyLocalUpdateIntent / applyLocalDeleteIntent 对 memory 的直接写入
 - 完整移除结构化短期记忆：删除运行时 API、UI、模型协议、上下文注入、导入导出和备份合并支持
@@ -12,7 +12,10 @@
 - 完整移除旧话题卡片：删除 topicCards 状态、UI、算法、导入导出、失败重试和调试接口
 - 旧备份中的 topicCards 字段会被忽略；话题记忆保留并统一称为“近期话题”
 - Topic 写入收敛为唯一主链路：TopicMemoryManager.enqueue → processBatch → applyModelResult → save → mem_topic_memory
-- 状态引擎改为直接读取 TopicMemoryManager 的索引话题，导入聊天后自动排队更新近期话题
+- 完整移除持久化状态引擎：删除 StateEngine、mem_state_engine、状态面板、自动推断、模型协议、导入导出和调试接口
+- 启动时清理旧 mem_state_engine；旧备份中的 stateEngine 字段会被忽略
+- 保留 activeFocus，仅用于显示当前运行阶段，不持久化且不注入模型上下文
+- 导入聊天后自动排队更新近期话题
 - Chat history 收敛为只保存 messages
 - memorySystem.parseMemoryUpdate 改为只解析 wrapper；extractMemoryUpdatePayload 只解析；processMemoryUpdate 保留为兼容 wrapper
 

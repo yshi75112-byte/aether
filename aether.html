@@ -221,9 +221,6 @@
         .dot-topic {
             background: #6f8f84;
         }
-        .dot-state {
-            background: #557a9b;
-        }
         .topic-status-line {
             display: flex;
             align-items: center;
@@ -1087,11 +1084,6 @@
                 <button class="sidebar-close" id="sidebarClose" title="关闭面板">×</button>
             </div>
             <div class="sidebar-content" id="sidebarContent">
-                <!-- 状态引擎 -->
-                <div class="memory-section" id="memStateEngine">
-                    <h4><span class="dot dot-state"></span>状态引擎 V2</h4>
-                    <div class="empty-hint">暂无状态轨迹</div>
-                </div>
                 <!-- 累积式用户画像 -->
                 <div class="memory-section" id="memUserProfile">
                     <h4><span class="dot dot-long"></span>用户画像</h4>
@@ -1310,7 +1302,6 @@
             const webSearchModeSelect = $('#webSearchModeSelect');
             const inputHint = $('#inputHint');
             const toastContainer = $('#toastContainer');
-            const memStateEngine = $('#memStateEngine');
             const btnCleanExpired = $('#btnCleanExpired');
             const btnExportMem = $('#btnExportMem');
             const btnImportMem = $('#btnImportMem');
@@ -1454,16 +1445,21 @@
                 USER_PROFILE: 'memory_user_profile',
                 LAST_GOOD_BACKUP: 'last_good_backup',
                 MEMORY_ERROR_LOG: 'memory_error_log',
-                STATE_ENGINE: 'mem_state_engine',
             };
             const LEGACY_SHORT_TERM_STORAGE_KEY = 'mem_short_term';
+            const LEGACY_STATE_ENGINE_STORAGE_KEY = 'mem_state_engine';
             try {
                 localStorage.removeItem(LEGACY_SHORT_TERM_STORAGE_KEY);
+                localStorage.removeItem(LEGACY_STATE_ENGINE_STORAGE_KEY);
                 const legacyBackupRaw = localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP);
                 if (legacyBackupRaw) {
                     const legacyBackup = JSON.parse(legacyBackupRaw);
-                    if (legacyBackup && Object.prototype.hasOwnProperty.call(legacyBackup, LEGACY_SHORT_TERM_STORAGE_KEY)) {
+                    if (legacyBackup && (
+                        Object.prototype.hasOwnProperty.call(legacyBackup, LEGACY_SHORT_TERM_STORAGE_KEY) ||
+                        Object.prototype.hasOwnProperty.call(legacyBackup, LEGACY_STATE_ENGINE_STORAGE_KEY)
+                    )) {
                         delete legacyBackup[LEGACY_SHORT_TERM_STORAGE_KEY];
+                        delete legacyBackup[LEGACY_STATE_ENGINE_STORAGE_KEY];
                         localStorage.setItem(STORAGE_KEYS.LAST_GOOD_BACKUP, JSON.stringify(legacyBackup));
                     }
                 }
@@ -2512,7 +2508,6 @@
                     return {
                         longTerm: this.longTerm,
                         volatile: this.volatile,
-                        stateEngine: window.stateEngine ? window.stateEngine.getState() : null,
                         chatHistory: chatHistory,
                         chatSummary: chatSummary,
                         exportedAt: new Date().toISOString(),
@@ -2772,9 +2767,6 @@
                     if (memData.userNegation) {
                         this.handleUserNegation(memData.userNegation);
                     }
-                    if (memData.stateEngine && window.stateEngine) {
-                        window.stateEngine.applyExternalUpdate(memData.stateEngine);
-                    }
                 }
             }
 
@@ -2808,400 +2800,6 @@
                 },
             }) : null;
 
-            // ==================== 状态感知引擎 V2 ====================
-            class StateEngine {
-                constructor(storageKey) {
-                    this.storageKey = storageKey;
-                    this.state = this._normalizeState(this._load());
-                    this._save();
-                }
-
-                _emptyState() {
-                    return {
-                        version: 2,
-                        updatedAt: null,
-                        currentState: {
-                            goal: '',
-                            persistentGoal: '',
-                            blocker: '',
-                            persistentBlockers: [],
-                            mood: '',
-                            momentum: '',
-                        },
-                        stateTransitions: [],
-                        causalChains: [],
-                        inferences: [],
-                        prediction: {},
-                        trajectoryWarning: '',
-                        insight: '',
-                        recommendedAction: '',
-                    };
-                }
-
-                _load() {
-                    try {
-                        const raw = localStorage.getItem(this.storageKey);
-                        return raw ? JSON.parse(raw) : null;
-                    } catch (error) {
-                        console.warn('状态引擎读取失败:', error);
-                        return null;
-                    }
-                }
-
-                _save() {
-                    try {
-                        localStorage.setItem(this.storageKey, JSON.stringify(this.state));
-                    } catch (error) {
-                        console.warn('状态引擎保存失败:', error);
-                    }
-                }
-
-                _normalizeState(value) {
-                    const base = this._emptyState();
-                    const incoming = value && typeof value === 'object' ? value : {};
-                    const currentState = incoming.currentState && typeof incoming.currentState === 'object'
-                        ? incoming.currentState
-                        : {};
-                    return {
-                        ...base,
-                        ...incoming,
-                        version: 2,
-                        currentState: {
-                            ...base.currentState,
-                            ...currentState,
-                            persistentBlockers: this._dedupeStrings(currentState.persistentBlockers || incoming.persistentBlockers || []),
-                        },
-                        stateTransitions: this._normalizeList(incoming.stateTransitions).slice(-12),
-                        causalChains: this._normalizeList(incoming.causalChains).slice(-10),
-                        inferences: this._normalizeList(incoming.inferences || incoming.inference).slice(-10),
-                        prediction: incoming.prediction && typeof incoming.prediction === 'object' ? incoming.prediction : {},
-                        trajectoryWarning: this._cleanText(incoming.trajectoryWarning, 360),
-                        insight: this._cleanText(incoming.insight, 360),
-                        recommendedAction: this._cleanText(incoming.recommendedAction, 360),
-                    };
-                }
-
-                _normalizeList(value) {
-                    if (!value) return [];
-                    return (Array.isArray(value) ? value : [value]).filter(item => item && typeof item === 'object');
-                }
-
-                _cleanText(value, maxLength = 180) {
-                    const text = String(value || '')
-                        .replace(/<!--\s*MEMORY_UPDATE\s*:[\s\S]*?\s*-->/gi, ' ')
-                        .replace(/\s+/g, ' ')
-                        .trim();
-                    return text.length > maxLength ? text.slice(0, maxLength - 1).trim() + '...' : text;
-                }
-
-                _dedupeStrings(items, maxItems = 10) {
-                    const deduped = [];
-                    (Array.isArray(items) ? items : [items]).forEach(item => {
-                        const text = this._cleanText(item, 160);
-                        if (!text) return;
-                        const exists = deduped.some(existing => memorySystem._similarity(existing, text) > 0.72);
-                        if (!exists) deduped.push(text);
-                    });
-                    return deduped.slice(-maxItems);
-                }
-
-                _pushUniqueObject(listName, item, keyFields, maxItems = 12) {
-                    if (!item || typeof item !== 'object') return;
-                    const list = Array.isArray(this.state[listName]) ? this.state[listName] : [];
-                    const normalized = { ...item };
-                    keyFields.forEach(field => {
-                        if (normalized[field]) normalized[field] = this._cleanText(normalized[field], 220);
-                    });
-                    const exists = list.some(existing =>
-                        keyFields.every(field => memorySystem._similarity(existing[field] || '', normalized[field] || '') > 0.76)
-                    );
-                    if (!exists) list.push(normalized);
-                    this.state[listName] = list.slice(-maxItems);
-                }
-
-                _collectRecentText(history = [], extraTexts = []) {
-                    const recent = (Array.isArray(history) ? history : [])
-                        .slice(-24)
-                        .map(msg => this._cleanText(msg && msg.content, 240))
-                        .filter(Boolean);
-                    return recent.concat(extraTexts.map(text => this._cleanText(text, 240)).filter(Boolean)).join('\n');
-                }
-
-                _inferCurrentGoal(text, previousGoal, topics = []) {
-                    const lower = String(text || '').toLowerCase();
-                    const recentTopic = (topics || []).slice(-1)[0];
-                    if (/状态感知引擎|状态机引擎|state engine|persistentgoal|stateTransitions|trajectoryWarning/i.test(text)) {
-                        return '实现状态感知引擎 V2';
-                    }
-                    if (/话题系统|近期话题|topic memory|topic index/i.test(text)) {
-                        return '重构话题系统以减少重复并保留因果节点';
-                    }
-                    if (/长期记忆|波动记忆|记忆系统|memory_update|localstorage/i.test(text)) {
-                        return '重构 AI 助手的记忆系统';
-                    }
-                    if (/手机|移动端|pwa|进入手机|安装到手机/i.test(text)) {
-                        return '改善手机端使用体验';
-                    }
-                    if (/测试|验证|运行|修复|报错|debug|bug/i.test(lower)) {
-                        return '验证并修复当前 AI 助手实现';
-                    }
-                    const recentTopicTitle = recentTopic && (recentTopic.title || recentTopic.topicGroup);
-                    if (recentTopicTitle) {
-                        return '推进' + this._cleanText(recentTopicTitle, 40);
-                    }
-                    return previousGoal || '推进当前 AI 助手迭代';
-                }
-
-                _inferPersistentGoal(text, previousPersistentGoal) {
-                    if (previousPersistentGoal) return previousPersistentGoal;
-                    if (/长期目标|persistentGoal|长期使用|长期可用|AI助手|aether|手机|记忆系统|状态引擎/i.test(text)) {
-                        return '构建可长期使用的 AI 助手';
-                    }
-                    return '构建可长期使用的 AI 助手';
-                }
-
-                _inferBlockers(text, existing = []) {
-                    const blockers = [];
-                    const add = value => blockers.push(value);
-                    if (/手机|移动端|pwa|进入手机|安装到手机/i.test(text)) add('手机端体验差或落地路径未闭合');
-                    if (/记忆|长期|短期|波动|memory_update|localstorage/i.test(text)) add('记忆可靠性不足');
-                    if (/话题|节点|卡片|重复|归类|summary/i.test(text)) add('话题系统容易重复或偏向事件摘要');
-                    if (/状态|状态机|迁移|轨迹|persistentGoal|blocker|prediction|risk/i.test(text)) add('缺少稳定的状态迁移与风险追踪');
-                    if (/闭环|验证|长期使用|落地|真实使用/i.test(text)) add('缺少长期使用反馈闭环');
-                    if (/失败|报错|错误|拒绝访问|blocked|sandbox|JSON 解析|parse/i.test(text)) add('实现或解析链路仍有失败风险');
-                    return this._dedupeStrings((existing || []).concat(blockers), 8);
-                }
-
-                _inferMood(text) {
-                    if (/不要|必须|失败|卡死|风险|警告|不可丢失|严格|不能|别/i.test(text)) return '强约束、警觉、希望系统更可靠';
-                    if (/目标|成功标准|输出结构|要求|实现/i.test(text)) return '聚焦、架构化、推进中';
-                    return '稳定推进';
-                }
-
-                _inferMomentum(text, blockers) {
-                    if (/成功标准|输出结构|格式|必须|核心原则/i.test(text)) return '高：正在把模糊需求压成可执行规格';
-                    if ((blockers || []).length >= 4) return '中：方向清晰，但阻塞项较多';
-                    if (/重复|卡死|偏离|无限重构/i.test(text)) return '受阻：正在识别循环风险';
-                    return '中：持续迭代';
-                }
-
-                _inferTrigger(text, blockers) {
-                    if (/不可丢失|长期目标/i.test(text)) return '发现最近话题可能覆盖长期目标';
-                    if (/不是记录事件链|状态迁移/i.test(text)) return '发现事件摘要无法解释状态变化';
-                    if (/阻塞项|持续追踪/i.test(text)) return '发现阻塞项会在短期话题切换中丢失';
-                    if (blockers && blockers.length) return '发现' + blockers[blockers.length - 1];
-                    return '用户提出新的系统状态要求';
-                }
-
-                _buildCausalChains(goal, blockers, text) {
-                    const chains = [];
-                    if (/记忆|状态|话题|长期目标/i.test(text)) {
-                        chains.push({
-                            cause: '长期 AI 助手需要跨会话连续性',
-                            effect: '用户持续重构记忆、话题和状态层',
-                            evidence: this._cleanText(text, 160),
-                        });
-                    }
-                    if ((blockers || []).some(item => /反馈闭环/.test(item))) {
-                        chains.push({
-                            cause: '落地验证不足',
-                            effect: '架构层面的优化会反复成为当前任务',
-                            evidence: '阻塞项包含“缺少长期使用反馈闭环”。',
-                        });
-                    }
-                    if (goal) {
-                        chains.push({
-                            cause: '当前目标从长期目标拆解而来',
-                            effect: goal,
-                            evidence: '状态引擎将 currentState.goal 与 persistentGoal 分开维护。',
-                        });
-                    }
-                    return chains.slice(-4);
-                }
-
-                _buildPrediction(goal, blockers, text) {
-                    const structural = /状态|记忆|话题|节点|迁移|blocker|prediction/i.test(text);
-                    return {
-                        nextAction: structural ? '继续验证状态引擎输出是否能解释真实对话轨迹' : '继续推进当前实现并观察记忆效果',
-                        nextTopic: structural ? '状态输出、长期目标保持、阻塞项追踪' : goal,
-                        futureTrajectory: structural
-                            ? '未来 3~7 天大概率会围绕状态、记忆和话题系统做闭环测试，并要求减少重复重构。'
-                            : '未来 3~7 天大概率会在当前功能上继续修修补补，直到进入真实使用验证。',
-                        confidence: structural ? 0.78 : 0.64,
-                    };
-                }
-
-                _buildTrajectoryWarning(text, goal, persistentGoal) {
-                    const structureHits = (text.match(/记忆|话题|状态|节点|摘要|迁移|blocker|summary/gi) || []).length;
-                    const landingHits = (text.match(/手机|使用|验证|上线|日常|闭环|真实/gi) || []).length;
-                    if (structureHits >= 6 && landingHits <= 1) {
-                        return '近期注意力高度集中在记忆、话题和状态结构上。若继续当前路径，未来一周可能仍停留在架构重构阶段，延后“' + persistentGoal + '”的真实使用验证。';
-                    }
-                    if (goal && persistentGoal && memorySystem._similarity(goal, persistentGoal) < 0.38) {
-                        return '当前目标与长期目标存在距离，需要确认这次迭代能否服务于“' + persistentGoal + '”。';
-                    }
-                    return '';
-                }
-
-                _buildInsight(text, persistentGoal) {
-                    if (/记忆|话题|状态|状态机|迁移/i.test(text)) {
-                        return '你正在把状态与记忆可靠性当作 AI 助手长期可用的前置条件；真正需要尽快补上的可能是小规模真实使用反馈，否则系统会不断变精密但验证不足。';
-                    }
-                    return '当前迭代需要持续对齐长期目标：“' + persistentGoal + '”，避免被最近话题完全带走。';
-                }
-
-                _buildRecommendedAction(goal, blockers) {
-                    if ((blockers || []).some(item => /反馈闭环/.test(item))) {
-                        return '先用状态引擎跑 3~5 天真实对话，记录它是否能稳定回答当前状态、迁移原因、阻塞项和下一步，再决定是否继续重构。';
-                    }
-                    if (/状态感知引擎/.test(goal || '')) {
-                        return '完成 V2 后立刻用最近对话回放测试：长期目标是否保留，阻塞项是否持续，预测是否具体。';
-                    }
-                    return '把当前目标拆成一个可验证动作，并检查它是否服务长期 AI 助手目标。';
-                }
-
-                updateFromTurn(userMsg, aiMsg, context = {}) {
-                    const previous = this.state.currentState || {};
-                    const history = context.history || conversationHistory;
-                    const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
-                    const topics = context.topics || (topicState && Array.isArray(topicState.topics) ? topicState.topics : []);
-                    const memorySummary = memorySystem.getMemorySummary();
-                    const text = this._collectRecentText(history, [
-                        userMsg && userMsg.content,
-                        aiMsg && aiMsg.content,
-                        memorySummary,
-                    ]);
-                    const goal = this._inferCurrentGoal(text, previous.goal, topics);
-                    const persistentGoal = this._inferPersistentGoal(text, previous.persistentGoal);
-                    const persistentBlockers = this._inferBlockers(text, previous.persistentBlockers);
-                    const blocker = persistentBlockers[persistentBlockers.length - 1] || '';
-                    const mood = this._inferMood(text);
-                    const momentum = this._inferMomentum(text, persistentBlockers);
-                    const trigger = this._inferTrigger(text, persistentBlockers);
-
-                    this.state.currentState = {
-                        goal,
-                        persistentGoal,
-                        blocker,
-                        persistentBlockers,
-                        mood,
-                        momentum,
-                    };
-
-                    if (previous.goal && goal && memorySystem._similarity(previous.goal, goal) < 0.62) {
-                        this._pushUniqueObject('stateTransitions', {
-                            from: previous.goal,
-                            trigger,
-                            to: goal,
-                            timestamp: Date.now(),
-                        }, ['from', 'trigger', 'to']);
-                    }
-
-                    this._buildCausalChains(goal, persistentBlockers, text).forEach(chain => {
-                        this._pushUniqueObject('causalChains', chain, ['cause', 'effect']);
-                    });
-
-                    this.state.inferences = [{
-                        claim: '用户最近的结构优化仍服务于长期 AI 助手目标，而不是把目标改成最近话题或状态节点本身。',
-                        evidence: this._cleanText(text, 220),
-                        confidence: /长期目标|AI助手|状态|记忆|话题/i.test(text) ? 0.82 : 0.62,
-                    }].concat(this.state.inferences || []).slice(0, 8);
-                    this.state.prediction = this._buildPrediction(goal, persistentBlockers, text);
-                    this.state.trajectoryWarning = this._buildTrajectoryWarning(text, goal, persistentGoal);
-                    this.state.insight = this._buildInsight(text, persistentGoal);
-                    this.state.recommendedAction = this._buildRecommendedAction(goal, persistentBlockers);
-                    this.state.updatedAt = Date.now();
-                    this._save();
-                    window.dispatchEvent(new CustomEvent('aether-state-updated'));
-                    return this.getState();
-                }
-
-                applyExternalUpdate(update) {
-                    if (!update || typeof update !== 'object') return this.getState();
-                    const incoming = update.stateEngine && typeof update.stateEngine === 'object' ? update.stateEngine : update;
-                    const current = incoming.currentState && typeof incoming.currentState === 'object' ? incoming.currentState : {};
-                    const previousGoal = this.state.currentState.goal;
-                    const nextGoal = this._cleanText(current.goal || incoming.goal || '', 160);
-                    const persistentGoal = this._cleanText(current.persistentGoal || incoming.persistentGoal || '', 180);
-
-                    if (nextGoal) this.state.currentState.goal = nextGoal;
-                    if (persistentGoal) this.state.currentState.persistentGoal = persistentGoal;
-                    if (current.blocker || incoming.blocker) this.state.currentState.blocker = this._cleanText(current.blocker || incoming.blocker, 180);
-                    if (current.mood || incoming.mood) this.state.currentState.mood = this._cleanText(current.mood || incoming.mood, 120);
-                    if (current.momentum || incoming.momentum) this.state.currentState.momentum = this._cleanText(current.momentum || incoming.momentum, 160);
-                    this.state.currentState.persistentBlockers = this._dedupeStrings(
-                        (this.state.currentState.persistentBlockers || [])
-                            .concat(current.persistentBlockers || incoming.persistentBlockers || []),
-                        8
-                    );
-
-                    this._normalizeList(incoming.stateTransitions).forEach(item =>
-                        this._pushUniqueObject('stateTransitions', item, ['from', 'trigger', 'to'])
-                    );
-                    if (previousGoal && nextGoal && memorySystem._similarity(previousGoal, nextGoal) < 0.62) {
-                        this._pushUniqueObject('stateTransitions', {
-                            from: previousGoal,
-                            trigger: this._cleanText(incoming.trigger || 'AI 状态更新', 160),
-                            to: nextGoal,
-                            timestamp: Date.now(),
-                        }, ['from', 'trigger', 'to']);
-                    }
-                    this._normalizeList(incoming.causalChains).forEach(item =>
-                        this._pushUniqueObject('causalChains', item, ['cause', 'effect'])
-                    );
-                    this._normalizeList(incoming.inferences || incoming.inference).forEach(item =>
-                        this._pushUniqueObject('inferences', item, ['claim', 'evidence'], 10)
-                    );
-                    if (incoming.prediction && typeof incoming.prediction === 'object') {
-                        this.state.prediction = incoming.prediction;
-                    }
-                    ['trajectoryWarning', 'insight', 'recommendedAction'].forEach(field => {
-                        if (incoming[field]) this.state[field] = this._cleanText(incoming[field], 360);
-                    });
-                    this.state.updatedAt = Date.now();
-                    this.state = this._normalizeState(this.state);
-                    this._save();
-                    window.dispatchEvent(new CustomEvent('aether-state-updated'));
-                    return this.getState();
-                }
-
-                mergeImported(importedState) {
-                    if (!importedState || typeof importedState !== 'object') return 0;
-                    const before = JSON.stringify(this.state);
-                    this.applyExternalUpdate(importedState);
-                    return before === JSON.stringify(this.state) ? 0 : 1;
-                }
-
-                clear() {
-                    this.state = this._emptyState();
-                    try {
-                        localStorage.removeItem(this.storageKey);
-                    } catch (error) { /* ignore */ }
-                    window.dispatchEvent(new CustomEvent('aether-state-updated'));
-                }
-
-                getState() {
-                    return JSON.parse(JSON.stringify(this.state));
-                }
-
-                getPromptSummary() {
-                    const state = this.getState();
-                    const promptState = {
-                        currentState: state.currentState,
-                        stateTransitions: (state.stateTransitions || []).slice(-6),
-                        causalChains: (state.causalChains || []).slice(-5),
-                        inference: (state.inferences || [])[0] || {},
-                        prediction: state.prediction || {},
-                        trajectoryWarning: state.trajectoryWarning || '',
-                        insight: state.insight || '',
-                        recommendedAction: state.recommendedAction || '',
-                    };
-                    return JSON.stringify(promptState, null, 2);
-                }
-            }
-
-            window.stateEngine = new StateEngine(STORAGE_KEYS.STATE_ENGINE);
-            const stateEngine = window.stateEngine;
 
             function createMessageId(role, timestamp = Date.now()) {
                 messageSequence += 1;
@@ -3849,26 +3447,9 @@
                 return memorySystem._applyMemoryData(memData);
             }
 
-            function updateStateEngineForTurn(userMsg, aiMsg) {
-                try {
-                    const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
-                    stateEngine.updateFromTurn(userMsg, aiMsg, {
-                        history: conversationHistory,
-                        topics: topicState && Array.isArray(topicState.topics) ? topicState.topics : [],
-                    });
-                } catch (error) {
-                    console.warn('状态引擎更新失败:', error);
-                    recordDebugError(error, '状态引擎更新失败');
-                }
-            }
-
             function commitTurnClosedLoop(userMsg, aiMsg, options = {}) {
                 const userMessage = ensureConversationMessageId(userMsg);
                 const aiMessage = aiMsg ? ensureConversationMessageId(aiMsg) : null;
-
-                if (options.updateState !== false && userMessage) {
-                    updateStateEngineForTurn(userMessage, aiMessage);
-                }
 
                 normalizeConversationHistoryIds();
                 compactConversationHistory();
@@ -4514,7 +4095,6 @@
                 const memorySummary = memorySystem.getMemorySummary();
                 const userProfileSummary = getUserProfileSummary();
                 const topicMemorySummary = getTopicMemorySummary();
-                const stateEngineSummary = stateEngine.getPromptSummary();
                 const beijingTemporalContext = getBeijingTemporalContext();
                 
                 const systemPromptParts = [
@@ -4536,21 +4116,6 @@
                     memorySummary,
                     userProfileSummary ? "\n## 长期累积用户画像\n" + userProfileSummary : "",
                     topicMemorySummary ? "\n## 近期话题\n" + topicMemorySummary : "",
-                    "",
-                    "## 状态感知引擎 V2",
-                    stateEngineSummary,
-                    "",
-                    "状态引擎规则：",
-                    "- 不要把它当聊天总结器或记忆摘要器；它维护用户正在做什么、为什么做、状态如何迁移。",
-                    "- persistentGoal 是长期目标，权重高于最近话题；最近聊近期话题或状态节点时，也不要把长期目标改成这些局部任务。",
-                    "- stateTransitions 记录状态迁移链，不记录普通事件流水。格式是 from / trigger / to。",
-                    "- persistentBlockers 必须持续追踪，即使用户最近没提也不要删除。",
-                    "- 允许做隐含推理，但必须给 evidence 和 confidence。",
-                    "- 必须预测未来 3~7 天最可能的 nextAction / nextTopic / futureTrajectory，并给 confidence。",
-                    "- 如果发现无限重构、偏离主目标、重复讨论或长期卡死，必须写 trajectoryWarning。",
-                    "- insight 要指出用户可能没发现的模式，但不要人格攻击。",
-                    "- 当本轮出现状态变化、阻塞项、预测或风险时，在 MEMORY_UPDATE JSON 里加入 stateEngine 字段。",
-                    "- stateEngine 字段示例：{\"currentState\":{\"goal\":\"实现状态感知引擎 V2\",\"persistentGoal\":\"构建可长期使用的 AI 助手\",\"blocker\":\"缺少状态迁移追踪\",\"persistentBlockers\":[\"记忆可靠性不足\"]},\"stateTransitions\":[{\"from\":\"重构记忆系统\",\"trigger\":\"发现事件摘要无法解释状态变化\",\"to\":\"实现状态感知引擎 V2\"}],\"causalChains\":[{\"cause\":\"长期 AI 助手需要跨会话连续性\",\"effect\":\"用户重构状态层\",\"evidence\":\"用户要求 persistentGoal、persistentBlockers、prediction\"}],\"inference\":{\"claim\":\"当前局部任务服务于长期 AI 助手目标\",\"evidence\":\"用户明确要求长期目标不可丢失\",\"confidence\":0.82},\"prediction\":{\"nextAction\":\"回放最近对话验证状态输出\",\"nextTopic\":\"状态迁移与阻塞追踪\",\"futureTrajectory\":\"未来 3~7 天会测试状态引擎是否减少重复重构\",\"confidence\":0.78},\"trajectoryWarning\":\"若继续只优化结构，可能延后真实使用验证。\",\"insight\":\"你正在把记忆系统当作长期助手的前置条件。\",\"recommendedAction\":\"用真实对话验证 3~5 天再继续重构。\"}",
                     "",
                     "## 当前界面选择",
                     selectedMemoryContextText(),
@@ -5023,51 +4588,6 @@
                 panel.innerHTML = html;
             }
 
-            function renderStateEnginePanel() {
-                if (!memStateEngine || !stateEngine) return;
-                const state = stateEngine.getState();
-                const current = state.currentState || {};
-                const blockers = Array.isArray(current.persistentBlockers) ? current.persistentBlockers : [];
-                const transitions = Array.isArray(state.stateTransitions) ? state.stateTransitions.slice(-3).reverse() : [];
-                const updated = state.updatedAt
-                    ? new Date(state.updatedAt).toLocaleString('zh-CN', {
-                        month: '2-digit',
-                        day: '2-digit',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                    })
-                    : '未更新';
-                let html = '<h4><span class="dot dot-state"></span>状态引擎 V2</h4>';
-                if (!current.goal && !current.persistentGoal && transitions.length === 0) {
-                    html += '<div class="empty-hint">暂无状态轨迹</div>';
-                    memStateEngine.innerHTML = html;
-                    return;
-                }
-
-                html += '<div class="mem-item">当前：' + escapeHTML(current.goal || '未识别') +
-                    '<div class="mem-meta">长期目标：' + escapeHTML(current.persistentGoal || '未识别') + '</div>' +
-                    '<div class="mem-meta">状态：' + escapeHTML([current.mood, current.momentum].filter(Boolean).join(' · ') || '未识别') + '</div>' +
-                    '<div class="mem-meta">更新：' + escapeHTML(updated) + '</div></div>';
-                if (current.blocker || blockers.length) {
-                    html += '<div class="mem-item">阻塞：' + escapeHTML(current.blocker || blockers[blockers.length - 1] || '未识别') +
-                        '<div class="mem-meta">' + escapeHTML(blockers.slice(-4).join('；') || '暂无持续阻塞') + '</div></div>';
-                }
-                transitions.forEach(item => {
-                    html += '<div class="mem-item">迁移：' + escapeHTML(item.from || '') + ' → ' + escapeHTML(item.to || '') +
-                        '<div class="mem-meta">触发：' + escapeHTML(item.trigger || '未记录') + '</div></div>';
-                });
-                if (state.trajectoryWarning) {
-                    html += '<div class="mem-item">风险：' + escapeHTML(state.trajectoryWarning) + '</div>';
-                }
-                if (state.insight) {
-                    html += '<div class="mem-item">洞察：' + escapeHTML(state.insight) + '</div>';
-                }
-                if (state.recommendedAction) {
-                    html += '<div class="mem-item">建议：' + escapeHTML(state.recommendedAction) + '</div>';
-                }
-                memStateEngine.innerHTML = html;
-            }
-
             // ==================== 更新记忆面板 ====================
             function updateMemoryPanel() {
                 const memLong = $('#memLong');
@@ -5082,7 +4602,6 @@
                     sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条 · 近期话题 ' + topicCount + ' 个';
                 }
 
-                renderStateEnginePanel();
                 renderTopicMemoryPanel();
 
                 if (memUserProfile) {
@@ -5397,7 +4916,6 @@
                         let longImported = 0;
                         let volatileImported = 0;
                         let topicImported = 0;
-                        let stateImported = 0;
                         let profileImported = 0;
                         let hasChatChanges = false;
                         let hasSummaryChanges = false;
@@ -5477,10 +4995,6 @@
                             hasTopicChanges = hasTopicChanges || topicImported > 0;
                         }
 
-                        if (imported.stateEngine) {
-                            stateImported = stateEngine.mergeImported(imported.stateEngine);
-                        }
-
                         if (hasChatChanges || hasSummaryChanges || hasTopicChanges) {
                             persistChatHistory();
                         }
@@ -5500,12 +5014,11 @@
                         let msg = '导入完成：';
                         if (chatImported > 0) msg += `对话${chatImported}条、`;
                         if (topicImported > 0) msg += `话题${topicImported}条、`;
-                        if (stateImported > 0) msg += `状态${stateImported}组、`;
                         if (profileImported > 0) msg += `画像${profileImported}条、`;
                         if (longImported > 0) msg += `长期${longImported}条、`;
                         if (volatileImported > 0) msg += `波动${volatileImported}条、`;
                         if (chatImported === 0 && topicImported === 0 && profileImported === 0 &&
-                            stateImported === 0 && longImported === 0 && volatileImported === 0) {
+                            longImported === 0 && volatileImported === 0) {
                             msg = '未导入新数据（可能已存在或格式无效）';
                         } else {
                             msg = msg.replace(/、$/, '');
@@ -5523,7 +5036,6 @@
             btnClearAllMem.addEventListener('click', function() {
                 if (confirm('确定要清空全部记忆吗？此操作不可撤销。')) {
                     memorySystem._applyMemoryData({ clearAll: true }, 'UI/clear');
-                    stateEngine.clear();
                     if (topicMemoryManager) topicMemoryManager.clear();
                     memoryUserProfile = emptyUserProfile();
                     userProfileLoadFailed = false;
@@ -5619,12 +5131,6 @@
                                 });
                                 persistChatHistory();
                                 enqueueTopicMemory();
-                                const storedState = stateEngine.getState();
-                                if (!storedState.currentState.goal && conversationHistory.length > 0) {
-                                    const lastUserMsg = conversationHistory.slice().reverse().find(msg => msg.role === 'user');
-                                    const lastAssistantMsg = conversationHistory.slice().reverse().find(msg => msg.role === 'assistant');
-                                    if (lastUserMsg) updateStateEngineForTurn(lastUserMsg, lastAssistantMsg || null);
-                                }
                             }
                         }
                     }
@@ -5698,12 +5204,6 @@
                 clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
                 getActiveFocus: () => activeFocus,
-                getStateEngine: () => stateEngine.getState(),
-                refreshStateEngine: () => {
-                    const lastUserMsg = conversationHistory.slice().reverse().find(msg => msg.role === 'user');
-                    const lastAssistantMsg = conversationHistory.slice().reverse().find(msg => msg.role === 'assistant');
-                    return lastUserMsg ? stateEngine.updateFromTurn(lastUserMsg, lastAssistantMsg || null) : stateEngine.getState();
-                },
                 getMemoryDebugSnapshot: () => memorySystem.getDebugSnapshot(),
                 refreshDebugPanel,
             };

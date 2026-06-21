@@ -158,6 +158,14 @@ function testMemoryWriteGuard() {
         '旧话题卡片面板和文案必须完全移除');
     assert(/new window\.TopicMemoryManager\(/.test(html) && /topicMemoryManager\.getState\(\)/.test(html),
         '近期话题索引必须继续由 TopicMemoryManager 提供');
+    assert(!/\b(?:class StateEngine|stateEngine|getStateEngine|refreshStateEngine|renderStateEnginePanel)\b/.test(html),
+        '持久化状态引擎运行时、面板与调试接口必须完全移除');
+    assert(!/MEMORY_UPDATE[^\n]*stateEngine|persistentGoal|stateTransitions|trajectoryWarning/.test(html),
+        '模型提示词与协议不得继续要求状态引擎字段');
+    assert(html.includes("localStorage.removeItem(LEGACY_STATE_ENGINE_STORAGE_KEY)"),
+        '启动时必须清理旧 mem_state_engine 存储');
+    assert(/\bactiveFocus\b/.test(html) && /function setActiveFocus\(/.test(html),
+        '仅用于运行阶段显示的 activeFocus 必须保留');
 }
 
 function testHistoryOverflowProfile() {
