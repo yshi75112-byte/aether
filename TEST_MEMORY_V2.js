@@ -75,10 +75,9 @@ function testMemoryWriteGuard() {
         window: {},
         memoryDebugMode: true,
         STORAGE_KEYS: {
-            SHORT_TERM: 'mem_short_term', LONG_TERM: 'mem_long_term', VOLATILE: 'mem_volatile',
+            LONG_TERM: 'mem_long_term', VOLATILE: 'mem_volatile',
             LAST_GOOD_BACKUP: 'last_good_backup', MEMORY_ERROR_LOG: 'memory_error_log',
         },
-        MAX_SHORT_TERM_ENTRIES: 50,
         debugState: {},
         selectedMemory: null,
         debugLog() {},
@@ -109,7 +108,6 @@ function testMemoryWriteGuard() {
     const manager = new context.MemorySystem();
     context.memorySystem = manager;
     const guardedCalls = [
-        () => manager.addShortTerm('禁止直写'),
         () => manager.addPreference('测试', '禁止直写'),
         () => manager.addLongTermFact('测试', '禁止直写'),
         () => manager.addPlan('测试', '禁止直写'),
@@ -118,7 +116,6 @@ function testMemoryWriteGuard() {
         () => manager.removeMemory({ scope: 'all', content: 'x' }),
     ];
     guardedCalls.forEach(call => assert.strictEqual(call(), false, '越权写入必须返回 false'));
-    assert.strictEqual(storage.getItem('mem_short_term'), null, '越权调用不得写短期记忆');
     assert.strictEqual(storage.getItem('mem_long_term'), null, '越权调用不得写长期记忆');
     assert.strictEqual(storage.getItem('mem_volatile'), null, '越权调用不得写波动记忆');
     assert(warnings.some(args => args[0] === '[MEMORY VIOLATION]'), '越权调用必须 console.warn');
@@ -133,6 +130,11 @@ function testMemoryWriteGuard() {
     manager._applyMemoryData({ preference: { category: '测试', detail: '唯一入口可写' } }, 'API');
     assert(JSON.parse(storage.getItem('mem_long_term')).preferences.some(item => item.detail === '唯一入口可写'),
         '_applyMemoryData 应是可落盘的唯一入口');
+    manager._applyMemoryData({ shortTerm: [{ content: '旧备份不得复活' }] }, 'UI/import');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(manager, 'shortTerm'), false,
+        '导入旧 shortTerm 字段不得恢复短期记忆状态');
+    assert.strictEqual(storage.getItem('mem_short_term'), null,
+        '导入旧 shortTerm 字段不得恢复短期记忆存储');
     const saved = storage.getItem('mem_long_term');
     assert.strictEqual(manager._saveAll(), false, '直接调用 _saveAll 必须被总闸拒绝');
     assert.strictEqual(storage.getItem('mem_long_term'), saved, '被拒绝的 _saveAll 不得改变存储');
@@ -144,8 +146,16 @@ function testMemoryWriteGuard() {
         assert(body.includes('memoryViolation(') && body.includes('memory-write-disabled'),
             `${name} 必须 warn 并 reject`);
     });
-    assert(!/memorySystem\.(?:shortTerm|longTerm|volatile)[^\n]*\.(?:push|splice)\(/.test(html),
+    assert(!/memorySystem\.(?:longTerm|volatile)[^\n]*\.(?:push|splice)\(/.test(html),
         'UI/导入代码不得直接修改 memory 数组');
+    assert(!/\b(?:addShortTerm|removeShortTerm|MAX_SHORT_TERM_ENTRIES)\b/.test(html),
+        '短期记忆运行时 API 必须完全移除');
+    assert(!/SHORT_TERM\s*:\s*['"]mem_short_term['"]/.test(html),
+        'mem_short_term 不得继续作为活动存储键');
+    assert(html.includes("localStorage.removeItem(LEGACY_SHORT_TERM_STORAGE_KEY)"),
+        '启动时必须清理旧 mem_short_term 存储');
+    assert(!/"shortTerm"\s*:|\bmemData\.shortTerm\b|\bremoveShortTerm\b/.test(html),
+        '模型协议与导入链路不得继续接受短期记忆字段');
 }
 
 function testHistoryOverflowProfile() {

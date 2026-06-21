@@ -212,9 +212,6 @@
             display: inline-block;
             flex-shrink: 0;
         }
-        .dot-short {
-            background: #c9b99a;
-        }
         .dot-long {
             background: #5c5c52;
         }
@@ -1212,11 +1209,6 @@
                     <h4><span class="dot dot-long"></span>话题卡片</h4>
                     <div class="empty-hint">暂无话题记录</div>
                 </div>
-                <!-- 短期记忆 -->
-                <div class="memory-section" id="memShort">
-                    <h4><span class="dot dot-short"></span>短期记忆（7天）</h4>
-                    <div class="empty-hint">暂无短期记忆</div>
-                </div>
                 <!-- 话题记忆检查 -->
                 <div class="memory-section" id="topicMemoryPanel">
                     <h4><span class="dot dot-topic"></span>话题检查</h4>
@@ -1474,7 +1466,6 @@
             let conversationSummary = '';
             let topicCards = createGuardedTopicCards([]);
             let messageSequence = 0;
-            const MAX_SHORT_TERM_ENTRIES = 50; // 短期记忆最多保留50条
             const MAX_STORED_CHAT_MESSAGES = 120;
             const MAX_API_HISTORY_MESSAGES = 24;
             const MAX_SUMMARY_ITEMS = 40;
@@ -1570,7 +1561,6 @@
 
             // ==================== 存储键 ====================
             const STORAGE_KEYS = {
-                SHORT_TERM: 'mem_short_term',
                 LONG_TERM: 'mem_long_term',
                 VOLATILE: 'mem_volatile',
                 SETTINGS: 'app_settings',
@@ -1583,6 +1573,20 @@
                 MEMORY_ERROR_LOG: 'memory_error_log',
                 STATE_ENGINE: 'mem_state_engine',
             };
+            const LEGACY_SHORT_TERM_STORAGE_KEY = 'mem_short_term';
+            try {
+                localStorage.removeItem(LEGACY_SHORT_TERM_STORAGE_KEY);
+                const legacyBackupRaw = localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP);
+                if (legacyBackupRaw) {
+                    const legacyBackup = JSON.parse(legacyBackupRaw);
+                    if (legacyBackup && Object.prototype.hasOwnProperty.call(legacyBackup, LEGACY_SHORT_TERM_STORAGE_KEY)) {
+                        delete legacyBackup[LEGACY_SHORT_TERM_STORAGE_KEY];
+                        localStorage.setItem(STORAGE_KEYS.LAST_GOOD_BACKUP, JSON.stringify(legacyBackup));
+                    }
+                }
+            } catch (error) {
+                console.warn('旧短期记忆存储清理失败', error);
+            }
 
             function debugLog(...args) {
                 if (DEBUG_LOGS) console.log(...args);
@@ -1612,7 +1616,6 @@
                 const originalSetItem = prototype.setItem;
                 const originalRemoveItem = prototype.removeItem;
                 const guardedKeys = new Set([
-                    STORAGE_KEYS.SHORT_TERM,
                     STORAGE_KEYS.LONG_TERM,
                     STORAGE_KEYS.VOLATILE,
                 ]);
@@ -1844,8 +1847,6 @@
                 }
 
                 loadAll() {
-                    this.shortTerm = this._loadJSON(STORAGE_KEYS.SHORT_TERM, { entries: [] });
-                    if (!Array.isArray(this.shortTerm.entries)) this.shortTerm.entries = [];
                     this.longTerm = this._loadJSON(STORAGE_KEYS.LONG_TERM, {
                         expenses: [],
                         preferences: [],
@@ -1870,7 +1871,6 @@
                     if (!Array.isArray(this.volatile.temporaryEvents)) this.volatile.temporaryEvents = [];
                     this._cleanExpired(true);
                     debugLog('🧠 记忆系统初始化完成:', {
-                        shortTerm: this.shortTerm.entries.length,
                         longTerm: {
                             expenses: this.longTerm.expenses.length,
                             preferences: this.longTerm.preferences.length,
@@ -1901,13 +1901,12 @@
                 _saveAll() {
                     if (!this._isMemoryWriteAuthorized()) return memoryViolation('_saveAll', 'MemorySystem');
                     try {
-                        [STORAGE_KEYS.SHORT_TERM, STORAGE_KEYS.LONG_TERM, STORAGE_KEYS.VOLATILE].forEach(key => {
+                        [STORAGE_KEYS.LONG_TERM, STORAGE_KEYS.VOLATILE].forEach(key => {
                             const raw = localStorage.getItem(key);
                             if (!raw) return;
                             const parsed = safeJsonParse(raw, null, 'MEMORY_BACKUP');
                             if (parsed.ok) writeLastGoodBackup(key, parsed.value);
                         });
-                        if (!this._invalidStorageKeys.has(STORAGE_KEYS.SHORT_TERM)) localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                         if (!this._invalidStorageKeys.has(STORAGE_KEYS.LONG_TERM)) localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                         if (!this._invalidStorageKeys.has(STORAGE_KEYS.VOLATILE)) localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
                         this._recordSaveSnapshot();
@@ -1915,7 +1914,6 @@
                         console.warn('记忆存储空间不足', e);
                         this._cleanExpired();
                         try {
-                            if (!this._invalidStorageKeys.has(STORAGE_KEYS.SHORT_TERM)) localStorage.setItem(STORAGE_KEYS.SHORT_TERM, JSON.stringify(this.shortTerm));
                             if (!this._invalidStorageKeys.has(STORAGE_KEYS.LONG_TERM)) localStorage.setItem(STORAGE_KEYS.LONG_TERM, JSON.stringify(this.longTerm));
                             if (!this._invalidStorageKeys.has(STORAGE_KEYS.VOLATILE)) localStorage.setItem(STORAGE_KEYS.VOLATILE, JSON.stringify(this.volatile));
                             this._recordSaveSnapshot();
@@ -1961,7 +1959,6 @@
                 getDebugSnapshot() {
                     const basicInfo = this.longTerm && this.longTerm.basicInfo ? this.longTerm.basicInfo : {};
                     return {
-                        shortTerm: (this.shortTerm.entries || []).length,
                         longTerm: countLongTermEntriesFromValue(this.longTerm),
                         volatile: countVolatileEntriesFromValue(this.volatile),
                         basicInfo: countDefinedBasicInfo(basicInfo),
@@ -1976,13 +1973,6 @@
                 _cleanExpired(initializing = false) {
                     if (!initializing && !this._guardMemoryWrite('_cleanExpired')) return false;
                     const now = Date.now();
-                    const sevenDays = 7 * 24 * 60 * 60 * 1000;
-
-                    // 短期记忆：优先按 expiresAt，否则按 timestamp + 7天
-                    this.shortTerm.entries = (this.shortTerm.entries || []).filter(e => {
-                        const expiry = e.expiresAt || ((e.timestamp || 0) + sevenDays);
-                        return now < expiry;
-                    });
 
                     // 波动记忆 - 临时事件：按估计过期时间清理
                     this.volatile.temporaryEvents = (this.volatile.temporaryEvents || []).filter(e =>
@@ -1991,38 +1981,6 @@
 
                     // 波动记忆 - 计划：不过期，等待用户主动删除
                     // （计划类记忆不自动过期，由用户指示删除）
-                }
-
-                /** 短期记忆 - 添加条目 */
-                addShortTerm(content, source = 'dialogue') {
-                    if (!this._guardMemoryWrite('addShortTerm')) return false;
-                    // 提取关键信息后存储（精简）
-                    const trimmed = this._extractKeyInfo(content);
-                    if (!trimmed || trimmed.length < 2) return;
-
-                    // 检查重复
-                    const existing = this.shortTerm.entries.find(e =>
-                        this._similarity(e.content, trimmed) > 0.75
-                    );
-                    if (existing) {
-                        // 整合：更新时间和内容
-                        existing.content = this._mergeContent(existing.content, trimmed);
-                        existing.timestamp = Date.now();
-                        existing.expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
-                    } else {
-                        this.shortTerm.entries.push({
-                            content: trimmed,
-                            timestamp: Date.now(),
-                            expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-                            source,
-                        });
-                    }
-                    // 限制短期记忆条目数（最多50条，超出则丢弃最旧的）
-                    if (this.shortTerm.entries.length > MAX_SHORT_TERM_ENTRIES) {
-                        this.shortTerm.entries.sort((a, b) => b.timestamp - a.timestamp);
-                        this.shortTerm.entries = this.shortTerm.entries.slice(0, MAX_SHORT_TERM_ENTRIES);
-                    }
-                    this._saveAll();
                 }
 
                 /** 长期记忆 - 添加开销 */
@@ -2278,18 +2236,6 @@
                         this._similarity(itemText, targetText) > 0.62;
                 }
 
-                removeShortTerm(target) {
-                    if (!this._guardMemoryWrite('removeShortTerm')) return false;
-                    if (typeof target === 'number') {
-                        this.shortTerm.entries.splice(target, 1);
-                    } else {
-                        this.shortTerm.entries = (this.shortTerm.entries || []).filter(e =>
-                            !this._matchesMemoryTarget(e, target)
-                        );
-                    }
-                    this._saveAll();
-                }
-
                 removeBasicInfo(target) {
                     if (!this._guardMemoryWrite('removeBasicInfo')) return false;
                     const targets = Array.isArray(target) ? target : [target];
@@ -2392,7 +2338,6 @@
                         const scope = item && typeof item === 'object'
                             ? (item.scope || item.memoryType || item.section || item.kind || '')
                             : '';
-                        if (!scope || ['shortTerm', 'short', 'all'].includes(scope)) this.removeShortTerm(item);
                         if (!scope || ['longTerm', 'long', 'all'].includes(scope)) this.removeLongTermMemory(item);
                         if (!scope || ['volatile', 'plan', 'plans', 'temporaryEvent', 'temporaryEvents', 'all'].includes(scope)) {
                             this.removeVolatileMemory(item);
@@ -2486,9 +2431,6 @@
                             : '';
                         const shouldCheck = (...names) => !scope || scope === 'all' || names.includes(scope);
 
-                        if (shouldCheck('shortTerm', 'short', 'all')) {
-                            count += this._updateMemoryList(this.shortTerm.entries, item, updates);
-                        }
                         if (shouldCheck('longTerm', 'long', 'preference', 'preferences', 'fact', 'facts', 'aiLearning',
                             'learning', 'expense', 'expenses', 'basicInfo', 'profile', 'all')) {
                             count += this._updateMemoryList(this.longTerm.preferences, item, updates);
@@ -2511,10 +2453,6 @@
                 /** 用户否定时修改记忆 */
                 handleUserNegation(negatedTopic) {
                     if (!this._guardMemoryWrite('handleUserNegation')) return false;
-                    // 在短期记忆中查找并移除相关内容
-                    this.shortTerm.entries = this.shortTerm.entries.filter(e =>
-                        !this._matchesMemoryTarget(e, negatedTopic)
-                    );
                     // 在长期记忆的喜好中查找
                     this.longTerm.preferences = this.longTerm.preferences.filter(p =>
                         !this._matchesMemoryTarget(p, negatedTopic)
@@ -2678,13 +2616,6 @@
                         parts.push('【长期事实】' + factStr);
                     }
 
-                    // 短期记忆（最近）
-                    const recentShort = (this.shortTerm.entries || [])
-                        .slice(-15)
-                        .map(e => e.content)
-                        .join('；');
-                    if (recentShort) parts.push('【近期对话要点】' + recentShort);
-
                     // 波动记忆 - 计划
                     if (this.volatile.plans.length > 0) {
                         const planStr = this.volatile.plans
@@ -2707,7 +2638,6 @@
                 /** 清空所有记忆 */
                 clearAll() {
                     if (!this._guardMemoryWrite('clearAll')) return false;
-                    this.shortTerm = { entries: [] };
                     this.longTerm = { expenses: [], preferences: [], basicInfo: { age: null, job: null,
                             pets: [], tools: [] }, aiLearning: [], facts: [] };
                     this.volatile = { plans: [], temporaryEvents: [] };
@@ -2717,7 +2647,6 @@
                 /** 导出记忆 */
                 exportData(chatHistory = [], chatSummary = '', topics = []) {
                     return {
-                        shortTerm: this.shortTerm,
                         longTerm: this.longTerm,
                         volatile: this.volatile,
                         stateEngine: window.stateEngine ? window.stateEngine.getState() : null,
@@ -2803,15 +2732,6 @@
                         }
                     }
 
-                    if (memData.shortTerm) {
-                        const shortItems = Array.isArray(memData.shortTerm.entries)
-                            ? memData.shortTerm.entries
-                            : asArray(memData.shortTerm);
-                        shortItems.forEach(item => {
-                            const content = textOf(item);
-                            if (content) this.addShortTerm(content, 'ai_extracted');
-                        });
-                    }
                     if (memData.expense) {
                         const exp = memData.expense;
                         this.addExpense(exp.amount, exp.category, exp.description || exp.content || exp.detail);
@@ -2949,9 +2869,6 @@
                         }
                         this.addTemporaryEvent(content, te.estimatedExpiry ?? te.expiry ?? null);
                     });
-                    if (memData.removeShortTerm) {
-                        asArray(memData.removeShortTerm).forEach(item => this.removeShortTerm(item));
-                    }
                     if (memData.removeBasicInfo) {
                         this.removeBasicInfo(memData.removeBasicInfo);
                     }
@@ -3157,7 +3074,7 @@
                     if (/话题卡片|话题系统|topic memory|topic-card|topicCards/i.test(text)) {
                         return '重构话题系统以减少重复并保留因果节点';
                     }
-                    if (/短期记忆|长期记忆|波动记忆|记忆系统|memory_update|localstorage/i.test(text)) {
+                    if (/长期记忆|波动记忆|记忆系统|memory_update|localstorage/i.test(text)) {
                         return '重构 AI 助手的记忆系统';
                     }
                     if (/手机|移动端|pwa|进入手机|安装到手机/i.test(text)) {
@@ -3525,14 +3442,10 @@
             }
 
             function summarizeMemoryStorage() {
-                const shortStore = safeParseStorage(STORAGE_KEYS.SHORT_TERM);
                 const longStore = safeParseStorage(STORAGE_KEYS.LONG_TERM);
                 const volatileStore = safeParseStorage(STORAGE_KEYS.VOLATILE);
                 const topicStore = safeParseStorage(STORAGE_KEYS.TOPIC_INDEX);
                 const profileStore = safeParseStorage(STORAGE_KEYS.USER_PROFILE);
-                const shortEntries = shortStore.value && Array.isArray(shortStore.value.entries)
-                    ? shortStore.value.entries.length
-                    : 0;
                 const longValue = longStore.value || {};
                 const volatileValue = volatileStore.value || {};
                 const topicValue = topicStore.value || {};
@@ -3544,7 +3457,6 @@
                 const volatileCount = countVolatileEntriesFromValue(volatileValue);
                 const runtimeSnapshot = memorySystem.getDebugSnapshot();
                 const storageSnapshot = {
-                    shortTerm: shortEntries,
                     longTerm: longCount,
                     volatile: volatileCount,
                     basicInfo: countDefinedBasicInfo(longValue.basicInfo),
@@ -3554,21 +3466,15 @@
                     ).length,
                 };
                 return {
-                    shortStore,
                     longStore,
                     volatileStore,
                     topicStore,
                     profileStore,
-                    summary: `画像 ${profileCount} / 短期 ${shortEntries} / 话题 ${topicCount} / 长期 ${longCount} / 波动 ${volatileCount}`,
+                    summary: `画像 ${profileCount} / 话题 ${topicCount} / 长期 ${longCount} / 波动 ${volatileCount}`,
                     runtimeSnapshot,
                     storageSnapshot,
                     isRuntimeStorageSynced: JSON.stringify(runtimeSnapshot) === JSON.stringify(storageSnapshot),
                     preview: {
-                        [STORAGE_KEYS.SHORT_TERM]: {
-                            bytes: shortStore.raw.length,
-                            entries: (shortStore.value && shortStore.value.entries || []).slice(-3),
-                            error: shortStore.error,
-                        },
                         [STORAGE_KEYS.LONG_TERM]: {
                             bytes: longStore.raw.length,
                             value: longStore.value,
@@ -3626,15 +3532,14 @@
                 const directTempEvent = volatileFromStorage.temporaryEvent || volatileFromRuntime.temporaryEvent || null;
                 const directTempEvents = volatileFromStorage.temporaryEvents || volatileFromRuntime.temporaryEvents || [];
                 const runtimeTempEvents = volatileFromRuntime.temporaryEvents || [];
-                const memoryPanelExists = !!(document.querySelector('#memShort') &&
-                    document.querySelector('#memLong') &&
+                const memoryPanelExists = !!(document.querySelector('#memLong') &&
                     document.querySelector('#memVolatile'));
                 const now = Date.now();
 
                 if (debugPanelUpdated) debugPanelUpdated.textContent = formatDebugTime(now);
                 if (debugMemoryPanelExists) {
                     debugMemoryPanelExists.textContent = memoryPanelExists
-                        ? '存在（#memShort/#memLong/#memVolatile）'
+                        ? '存在（#memLong/#memVolatile）'
                         : '缺少记忆分区 DOM';
                     debugMemoryPanelExists.className = memoryPanelExists
                         ? 'debug-value debug-status-ok'
@@ -4394,8 +4299,7 @@
             }
 
             function countAllMemoryEntries() {
-                return (memorySystem.shortTerm.entries || []).length +
-                    countLongTermEntries() +
+                return countLongTermEntries() +
                     countVolatileEntries();
             }
 
@@ -4465,7 +4369,6 @@
             }
 
             function inferDeleteScope(text) {
-                if (/短期/.test(text)) return 'shortTerm';
                 if (/长期|喜好|事实|学习|开销|基本信息/.test(text)) return 'longTerm';
                 if (/波动|计划|临时|事件/.test(text)) return 'volatile';
                 return 'all';
@@ -4603,7 +4506,6 @@
             }
 
             function inferSaveMemoryType(text, target) {
-                if (/短期/.test(text)) return 'shortTerm';
                 if (/长期|长期事实|事实|喜好|偏好|基本信息/.test(text)) return 'longTerm';
                 if (/波动|临时|事件|待办|todo|计划|今天|明天|后天|会议|截止|提醒/.test(text + ' ' + target)) {
                     return /计划|待办|todo/.test(text) ? 'plan' : 'temporaryEvent';
@@ -4934,7 +4836,6 @@
             }
 
             function buildMemoryPanelSnapshot() {
-                const shortEntries = memorySystem.shortTerm.entries || [];
                 const longTerm = memorySystem.longTerm || {};
                 const volatile = memorySystem.volatile || {};
                 const plans = volatile.plans || [];
@@ -4947,16 +4848,11 @@
                     sidebar: {
                         isOpen: appContainer.classList.contains('sidebar-open'),
                         text: truncateForContext(sidebarContent ? sidebarContent.innerText : '', 1800),
-                        hasEmptyShortHint: !!$('#memShort .empty-hint'),
                         hasEmptyLongHint: !!$('#memLong .empty-hint'),
                         hasEmptyVolatileHint: !!$('#memVolatile .empty-hint'),
                     },
                     selection: selectedMemory,
                     counts: {
-                        shortTermVisible: shortEntries.filter(e =>
-                            e && e.content && (!e.expiresAt || e.expiresAt > Date.now())
-                        ).length,
-                        shortTermStored: shortEntries.length,
                         basicInfoFields: countDefinedBasicInfo(longTerm.basicInfo),
                         preferences: (longTerm.preferences || []).length,
                         aiLearning: (longTerm.aiLearning || []).length,
@@ -4966,7 +4862,6 @@
                         temporaryEvents: activeTemporaryEvents.length,
                     },
                     dataPreview: {
-                        shortTerm: shortEntries.slice(0, 8),
                         longTerm: {
                             basicInfo: longTerm.basicInfo || {},
                             preferences: (longTerm.preferences || []).slice(0, 8),
@@ -5035,14 +4930,14 @@
                     "## 已存储的记忆",
                     memorySummary,
                     userProfileSummary ? "\n## 长期累积用户画像\n" + userProfileSummary : "",
-                    topicMemorySummary ? "\n## 话题短期记忆\n" + topicMemorySummary : "",
+                    topicMemorySummary ? "\n## 近期话题\n" + topicMemorySummary : "",
                     "",
                     "## 状态感知引擎 V2",
                     stateEngineSummary,
                     "",
                     "状态引擎规则：",
                     "- 不要把它当聊天总结器或记忆摘要器；它维护用户正在做什么、为什么做、状态如何迁移。",
-                    "- persistentGoal 是长期目标，权重高于最近话题；最近聊话题卡片/短期记忆/状态节点时，也不要把长期目标改成这些局部任务。",
+                    "- persistentGoal 是长期目标，权重高于最近话题；最近聊话题卡片或状态节点时，也不要把长期目标改成这些局部任务。",
                     "- stateTransitions 记录状态迁移链，不记录普通事件流水。格式是 from / trigger / to。",
                     "- persistentBlockers 必须持续追踪，即使用户最近没提也不要删除。",
                     "- 允许做隐含推理，但必须给 evidence 和 confidence。",
@@ -5078,7 +4973,7 @@
                     "",
                     "示例1（基本信息）：",
                     "用户说：我叫张三，28岁，是程序员",
-                    "你的回复：了解了。<!--MEMORY_UPDATE:{\"basicInfo\":{\"age\":28,\"job\":\"程序员\"},\"shortTerm\":[{\"content\":\"用户叫张三\"}]}-->",
+                    "你的回复：了解了。<!--MEMORY_UPDATE:{\"basicInfo\":{\"age\":28,\"job\":\"程序员\"}}-->",
                     "",
                     "示例2（计划）：",
                     "用户说：我明天要去健身房",
@@ -5105,15 +5000,13 @@
                     "你的回复：已修改。<!--MEMORY_UPDATE:{\"updateSelectedMemory\":{\"content\":\"我喜欢喝热美式\"}}-->",
                     "",
                     "## 记忆类型详解",
-                    "1. shortTerm - 短期记忆（7天）：对话要点",
-                    "2. basicInfo - 基本信息：年龄、职业、宠物等",
-                    "3. preference - 喜好：食物、颜色、风格等",
-                    "4. plan - 计划：学习、健身、工作计划",
-                    "5. temporaryEvent - 临时事件：会议、截止日期等",
-                    "6. fact - 长期事实：用户明确要求记住的内容",
+                    "1. basicInfo - 基本信息：年龄、职业、宠物等",
+                    "2. preference - 喜好：食物、颜色、风格等",
+                    "3. plan - 计划：学习、健身、工作计划",
+                    "4. temporaryEvent - 临时事件：会议、截止日期等",
+                    "5. fact - 长期事实：用户明确要求记住的内容",
                     "",
                     "## 删除记忆字段",
-                    "- 删除短期记忆：{\"removeShortTerm\":\"要删除的内容\"}",
                     "- 删除喜好：{\"removePreference\":{\"category\":\"分类\",\"detail\":\"内容\"}}",
                     "- 删除长期事实：{\"removeFact\":{\"category\":\"分类\",\"content\":\"内容\"}}",
                     "- 删除AI学习：{\"removeAiLearning\":{\"topic\":\"主题\",\"content\":\"内容\"}}",
@@ -5122,7 +5015,7 @@
                     "- 删除计划：{\"removePlan\":\"计划内容\"}",
                     "- 删除临时事件：{\"removeTemporaryEvent\":\"事件内容\"}",
                     "- 模糊删除任意记忆：{\"removeMemory\":{\"scope\":\"all\",\"content\":\"要删除的内容\"}}",
-                    "- scope 可选：shortTerm、longTerm、volatile、preference、fact、aiLearning、expense、basicInfo、plan、temporaryEvent、all",
+                    "- scope 可选：longTerm、volatile、preference、fact、aiLearning、expense、basicInfo、plan、temporaryEvent、all",
                     "",
                     "## 修改记忆字段",
                     "- 修改当前选中的记忆：{\"updateSelectedMemory\":{\"content\":\"新内容\"}}",
@@ -5131,7 +5024,7 @@
                     "",
                     "⚠️ 记忆更新规则（必须遵守）：",
                     "- 每次回复末尾必须添加隐藏记忆更新标记",
-                    "- 格式：<!--MEMORY_UPDATE:{\"shortTerm\":[{\"content\":\"要记住的对话要点\"}]}-->",
+                    "- 格式：<!--MEMORY_UPDATE:{\"fact\":{\"category\":\"通用\",\"content\":\"要长期记住的事实\"}}-->",
                     "- 无新记忆也加空标记：<!--MEMORY_UPDATE:{}-->",
                     "- JSON必须完整有效，不能有语法错误",
                     "",
@@ -5581,12 +5474,11 @@
 
             // ==================== 更新记忆面板 ====================
             function updateMemoryPanel() {
-                const memShort = $('#memShort');
                 const memLong = $('#memLong');
                 const memVolatile = $('#memVolatile');
                 const memUserProfile = $('#memUserProfile');
                 const sidebarStats = $('#sidebarStats');
-                if (!memShort || !memLong || !memVolatile) return;
+                if (!memLong || !memVolatile) return;
 
                 if (sidebarStats) {
                     sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条 · 话题 ' + topicCards.length + ' 个';
@@ -5686,35 +5578,6 @@
                     }
                     if (!profileCount) profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
                     memUserProfile.innerHTML = profileHTML;
-                }
-
-                const sevenDays = 7 * 24 * 60 * 60 * 1000;
-                const now = Date.now();
-                const storedShortCount = (memorySystem.shortTerm.entries || []).length;
-                const allShortEntries = (memorySystem.shortTerm.entries || []).filter(e => {
-                    const expiry = e.expiresAt || ((e.timestamp || 0) + sevenDays);
-                    return now < expiry;
-                });
-                const shortCountLabel = storedShortCount + '/' + MAX_SHORT_TERM_ENTRIES;
-                const shortEntries = allShortEntries.slice(-20).reverse();
-                if (shortEntries.length === 0) {
-                    memShort.innerHTML =
-                        '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortCountLabel + '条）</h4>' +
-                        '<div class="empty-hint">暂无有效短期记忆（已存 ' + storedShortCount + ' 条）</div>';
-                } else {
-                    let html = '<h4><span class="dot dot-short"></span>短期记忆（7天·' + shortCountLabel + '条）</h4>';
-                    shortEntries.forEach(e => {
-                        const text = String(e.content || '');
-                        const timeStr = e.timestamp ? new Date(e.timestamp).toLocaleDateString('zh-CN') : '未知';
-                        const expiryStr = e.expiresAt ?
-                            new Date(e.expiresAt).toLocaleDateString('zh-CN') :
-                            new Date((e.timestamp || now) + sevenDays).toLocaleDateString('zh-CN');
-                        html += memoryItemHTML(text.substring(0, 120), `${timeStr} · 过期: ${expiryStr}`, {
-                            scope: 'shortTerm',
-                            content: text,
-                        });
-                    });
-                    memShort.innerHTML = html;
                 }
 
                 // 长期记忆
@@ -6005,7 +5868,6 @@
                         const imported = JSON.parse(event.target.result);
 
                         let chatImported = 0;
-                        let shortImported = 0;
                         let longImported = 0;
                         let volatileImported = 0;
                         let topicImported = 0;
@@ -6079,7 +5941,6 @@
                         memorySystem._applyMemoryData(imported, 'UI/import');
 
                         const memoryCountsAfterImport = memorySystem.getDebugSnapshot();
-                        shortImported = Math.max(0, memoryCountsAfterImport.shortTerm - memoryCountsBeforeImport.shortTerm);
                         longImported = Math.max(0, memoryCountsAfterImport.longTerm - memoryCountsBeforeImport.longTerm);
                         volatileImported = Math.max(0, memoryCountsAfterImport.volatile - memoryCountsBeforeImport.volatile);
 
@@ -6121,13 +5982,12 @@
 
                         let msg = '导入完成：';
                         if (chatImported > 0) msg += `对话${chatImported}条、`;
-                        if (shortImported > 0) msg += `短期${shortImported}条、`;
                         if (topicImported > 0) msg += `话题${topicImported}条、`;
                         if (stateImported > 0) msg += `状态${stateImported}组、`;
                         if (profileImported > 0) msg += `画像${profileImported}条、`;
                         if (longImported > 0) msg += `长期${longImported}条、`;
                         if (volatileImported > 0) msg += `波动${volatileImported}条、`;
-                        if (chatImported === 0 && shortImported === 0 && topicImported === 0 && profileImported === 0 &&
+                        if (chatImported === 0 && topicImported === 0 && profileImported === 0 &&
                             stateImported === 0 && longImported === 0 && volatileImported === 0) {
                             msg = '未导入新数据（可能已存在或格式无效）';
                         } else {
@@ -6279,7 +6139,6 @@
                 debugLog('  - 最近对话:', conversationHistory.length, '/', MAX_STORED_CHAT_MESSAGES, '条');
                 debugLog('  - 历史摘要:', conversationSummary ? conversationSummary.split('\n').length : 0, '条');
                 debugLog('  - 话题卡片:', topicCards.length, '个');
-                debugLog('  - 短期记忆:', memorySystem.shortTerm.entries.length, '/', MAX_SHORT_TERM_ENTRIES, '条');
                 debugLog('  - 长期记忆:', countLongTermEntries(), '条');
                 debugLog('  - 波动记忆:', countVolatileEntries(), '条');
                 writeRuntimeSelfCheck('startup', {
