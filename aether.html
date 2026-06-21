@@ -256,9 +256,6 @@
             margin-top: 3px;
             color: var(--text-secondary);
         }
-        .topic-node-count {
-            color: var(--text-muted);
-        }
         @keyframes topic-spin {
             to {
                 transform: rotate(360deg);
@@ -310,110 +307,6 @@
             font-size: 0.7rem;
             color: var(--text-muted);
             font-style: italic;
-        }
-        .topic-card {
-            border-bottom: 1px dotted #ece8df;
-            padding: 8px 0;
-        }
-        .topic-card.failed {
-            border-left: 3px solid #c77833;
-            padding-left: 8px;
-            background: #fffaf2;
-        }
-        .topic-card:last-child {
-            border-bottom: none;
-        }
-        .topic-card summary {
-            cursor: pointer;
-            list-style: none;
-        }
-        .topic-card summary::-webkit-details-marker {
-            display: none;
-        }
-        .topic-card summary::before {
-            content: "+";
-            float: right;
-            color: var(--text-muted);
-            font-weight: 600;
-        }
-        .topic-card[open] summary::before {
-            content: "-";
-        }
-        .topic-title {
-            font-size: 0.76rem;
-            font-weight: 600;
-            color: var(--accent);
-            padding-right: 18px;
-            word-break: break-word;
-        }
-        .topic-summary {
-            margin-top: 4px;
-            font-size: 0.7rem;
-            color: var(--text-secondary);
-            line-height: 1.45;
-            word-break: break-word;
-        }
-        .topic-meta {
-            margin-top: 4px;
-            font-size: 0.64rem;
-            color: var(--text-muted);
-        }
-        .topic-failure {
-            margin-top: 7px;
-            padding: 7px;
-            border-radius: 6px;
-            background: #fff3e3;
-            border: 1px solid #f0d5ad;
-            color: #7a4b12;
-            font-size: 0.68rem;
-            line-height: 1.45;
-            word-break: break-word;
-        }
-        .topic-retry-btn {
-            margin-top: 7px;
-            padding: 4px 8px;
-            border: 1px solid #d9c6a8;
-            border-radius: 6px;
-            background: var(--ivory);
-            color: var(--accent);
-            font-size: 0.68rem;
-            cursor: pointer;
-        }
-        .topic-retry-btn:hover {
-            background: var(--card);
-        }
-        .topic-nodes {
-            margin-top: 7px;
-            padding-left: 15px;
-            color: var(--text-secondary);
-            font-size: 0.7rem;
-            line-height: 1.45;
-        }
-        .topic-nodes li {
-            margin: 2px 0;
-        }
-        .topic-raw {
-            margin-top: 8px;
-            padding: 7px;
-            border-radius: 6px;
-            background: #fbfaf7;
-            border: 1px solid #eee9df;
-            max-height: 180px;
-            overflow: auto;
-        }
-        .topic-raw-message {
-            margin-bottom: 6px;
-            font-size: 0.66rem;
-            line-height: 1.4;
-            color: var(--text-secondary);
-            word-break: break-word;
-        }
-        .topic-raw-message:last-child {
-            margin-bottom: 0;
-        }
-        .topic-raw-role {
-            font-weight: 600;
-            color: var(--accent-soft);
         }
         .sidebar-footer {
             padding: 10px 16px;
@@ -1204,11 +1097,6 @@
                     <h4><span class="dot dot-long"></span>用户画像</h4>
                     <div class="empty-hint">等待归档早期对话</div>
                 </div>
-                <!-- 话题卡片 -->
-                <div class="memory-section" id="memTopics">
-                    <h4><span class="dot dot-long"></span>话题卡片</h4>
-                    <div class="empty-hint">暂无话题记录</div>
-                </div>
                 <!-- 话题记忆检查 -->
                 <div class="memory-section" id="topicMemoryPanel">
                     <h4><span class="dot dot-topic"></span>话题检查</h4>
@@ -1423,7 +1311,6 @@
             const inputHint = $('#inputHint');
             const toastContainer = $('#toastContainer');
             const memStateEngine = $('#memStateEngine');
-            const memTopics = $('#memTopics');
             const btnCleanExpired = $('#btnCleanExpired');
             const btnExportMem = $('#btnExportMem');
             const btnImportMem = $('#btnImportMem');
@@ -1464,16 +1351,12 @@
             let isProcessing = false;
             let conversationHistory = []; // 最近对话消息，旧消息会压缩到 conversationSummary
             let conversationSummary = '';
-            let topicCards = createGuardedTopicCards([]);
             let messageSequence = 0;
             const MAX_STORED_CHAT_MESSAGES = 120;
             const MAX_API_HISTORY_MESSAGES = 24;
             const MAX_SUMMARY_ITEMS = 40;
             const SUMMARY_MERGE_SIMILARITY = 0.56;
             const SUMMARY_MAX_LINE_LENGTH = 260;
-            const MAX_TOPIC_KEY_NODES = 6;
-            const TOPIC_CARD_LIMIT = 20;
-            const MAX_TOPIC_ORGANIZE_BATCH_MESSAGES = 10;
             const DEBUG_LOGS = false;
             const memoryDebugMode = window.memoryDebugMode = true;
             const BEIJING_TIME_ZONE = 'Asia/Shanghai';
@@ -1637,26 +1520,6 @@
             }
 
             installMemoryStorageGuard();
-
-            function createGuardedTopicCards(items) {
-                const target = Array.isArray(items) ? items.slice() : [];
-                const mutators = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'copyWithin', 'fill']);
-                return new Proxy(target, {
-                    get(array, property, receiver) {
-                        if (mutators.has(property)) {
-                            return () => {
-                                memoryViolation(`topicCards.${String(property)}`, 'topic');
-                                return property === 'push' || property === 'unshift' ? array.length : false;
-                            };
-                        }
-                        return Reflect.get(array, property, receiver);
-                    },
-                    set(array, property) {
-                        memoryViolation(`topicCards[${String(property)}]`, 'topic');
-                        return false;
-                    },
-                });
-            }
 
             function writeRuntimeSelfCheck(stage, checks = {}, level = 'info') {
                 const normalizedChecks = checks && typeof checks === 'object' ? checks : { detail: checks };
@@ -2645,14 +2508,13 @@
                 }
 
                 /** 导出记忆 */
-                exportData(chatHistory = [], chatSummary = '', topics = []) {
+                exportData(chatHistory = [], chatSummary = '') {
                     return {
                         longTerm: this.longTerm,
                         volatile: this.volatile,
                         stateEngine: window.stateEngine ? window.stateEngine.getState() : null,
                         chatHistory: chatHistory,
                         chatSummary: chatSummary,
-                        topicCards: topics,
                         exportedAt: new Date().toISOString(),
                         exportedAtBeijing: formatBeijingDateTime(Date.now(), { includeWeekday: true, includeSeconds: true }),
                     };
@@ -3067,11 +2929,11 @@
 
                 _inferCurrentGoal(text, previousGoal, topics = []) {
                     const lower = String(text || '').toLowerCase();
-                    const recentTopic = (topics || [])[0];
+                    const recentTopic = (topics || []).slice(-1)[0];
                     if (/状态感知引擎|状态机引擎|state engine|persistentgoal|stateTransitions|trajectoryWarning/i.test(text)) {
                         return '实现状态感知引擎 V2';
                     }
-                    if (/话题卡片|话题系统|topic memory|topic-card|topicCards/i.test(text)) {
+                    if (/话题系统|近期话题|topic memory|topic index/i.test(text)) {
                         return '重构话题系统以减少重复并保留因果节点';
                     }
                     if (/长期记忆|波动记忆|记忆系统|memory_update|localstorage/i.test(text)) {
@@ -3083,8 +2945,9 @@
                     if (/测试|验证|运行|修复|报错|debug|bug/i.test(lower)) {
                         return '验证并修复当前 AI 助手实现';
                     }
-                    if (recentTopic && recentTopic.topicGroup) {
-                        return '推进' + this._cleanText(recentTopic.topicGroup, 40);
+                    const recentTopicTitle = recentTopic && (recentTopic.title || recentTopic.topicGroup);
+                    if (recentTopicTitle) {
+                        return '推进' + this._cleanText(recentTopicTitle, 40);
                     }
                     return previousGoal || '推进当前 AI 助手迭代';
                 }
@@ -3200,7 +3063,8 @@
                 updateFromTurn(userMsg, aiMsg, context = {}) {
                     const previous = this.state.currentState || {};
                     const history = context.history || conversationHistory;
-                    const topics = context.topics || topicCards;
+                    const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
+                    const topics = context.topics || (topicState && Array.isArray(topicState.topics) ? topicState.topics : []);
                     const memorySummary = memorySystem.getMemorySummary();
                     const text = this._collectRecentText(history, [
                         userMsg && userMsg.content,
@@ -3238,7 +3102,7 @@
                     });
 
                     this.state.inferences = [{
-                        claim: '用户最近的结构优化仍服务于长期 AI 助手目标，而不是把目标改成最近的话题卡片或状态节点本身。',
+                        claim: '用户最近的结构优化仍服务于长期 AI 助手目标，而不是把目标改成最近话题或状态节点本身。',
                         evidence: this._cleanText(text, 220),
                         confidence: /长期目标|AI助手|状态|记忆|话题/i.test(text) ? 0.82 : 0.62,
                     }].concat(this.state.inferences || []).slice(0, 8);
@@ -3365,19 +3229,6 @@
             }
 
             function getTopicMemorySummary() {
-                const localTopics = (topicCards || [])
-                    .map(normalizeTopicCard)
-                    .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                    .slice(0, 8)
-                    .map(card => {
-                        const nodes = (card.keyNodes || [])
-                            .slice(-MAX_TOPIC_KEY_NODES)
-                            .map(node => [node.label || node.type, node.text].filter(Boolean).join(': '))
-                            .filter(Boolean)
-                            .join(' -> ');
-                        return `- ${card.topicGroup || '未命名话题'}：${card.latestSummary || '暂无摘要'}${nodes ? '；节点：' + nodes : ''}`;
-                    });
-
                 const state = topicMemoryManager ? topicMemoryManager.getState() : null;
                 const indexedTopics = state && Array.isArray(state.topics) ? state.topics.slice(-8) : [];
                 const indexedSummary = indexedTopics.map(topic => {
@@ -3386,10 +3237,7 @@
                     return `- [${topic.category || '其他'}] ${topic.title || '未命名话题'}：${detail || '暂无摘要'}`;
                 });
 
-                const sections = [];
-                if (localTopics.length) sections.push('本地话题卡片：\n' + localTopics.join('\n'));
-                if (indexedSummary.length) sections.push('异步话题索引：\n' + indexedSummary.join('\n'));
-                return sections.join('\n');
+                return indexedSummary.length ? indexedSummary.join('\n') : '';
             }
 
             // ==================== 可视化诊断状态 ====================
@@ -3896,245 +3744,6 @@
                 return merged.slice(-MAX_SUMMARY_ITEMS);
             }
 
-            function cleanTopicText(text, maxLength = 180) {
-                const cleaned = stripVisibleTimestampPrefixes(stripMemoryUpdateMarkers(String(text || '')))
-                    .replace(/[#*_`>\[\]（）(){}<>]/g, ' ')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                if (!cleaned) return '';
-                return cleaned.length > maxLength ? cleaned.slice(0, maxLength - 1).trim() + '...' : cleaned;
-            }
-
-            function isLowValueTurn(userText, aiText) {
-                const text = cleanTopicText((userText || '') + ' ' + (aiText || ''), 240);
-                if (!text) return true;
-                if (/^(你好|您好|嗨|hi|hello|谢谢|感谢|ok|好的|好|嗯|行|可以|收到|明白|继续|再说|哈哈|hhhh|测试)[。！!,.，\s]*$/i.test(text)) {
-                    return true;
-                }
-                return text.length < 10 && !/(决定|待办|计划|错误|失败|完成|修复|删除|保存|新增|更新|结论|目标|规则)/.test(text);
-            }
-
-            function inferTopicGroup(userText, aiText) {
-                const text = cleanTopicText((userText || '') + ' ' + (aiText || ''), 360).toLowerCase();
-                const groups = [
-                    { name: '代码与调试', pattern: /代码|源码|函数|接口|报错|错误|bug|debug|调试|修复|实现|html|css|js|python|api|localstorage|server|测试|权限|sandbox|git/i },
-                    { name: '记忆系统', pattern: /记忆|长期|短期|波动|话题|节点|rawmessages|topic|summary|memory/i },
-                    { name: '任务计划', pattern: /计划|待办|下一步|安排|提醒|日程|deadline|todo|未完成|阻塞/i },
-                    { name: '设置与配置', pattern: /设置|配置|api key|模型|代理|自动保存|导入|导出|清理|开关/i },
-                    { name: '决策与规则', pattern: /决定|选择|采用|不要|必须|规则|目标|保留|压缩|合并|优先/i },
-                    { name: '写作与表达', pattern: /写|改写|文案|总结|摘要|翻译|润色|标题|邮件|消息/i },
-                    { name: '资料与学习', pattern: /解释|原理|为什么|区别|学习|教程|资料|概念|结论/i },
-                    { name: '生活与个人事项', pattern: /购物|费用|开销|预算|健康|吃|睡|家|旅行|宠物|朋友|工作/i },
-                ];
-                const matched = groups.find(group => group.pattern.test(text));
-                if (matched) return matched.name;
-
-                const source = cleanTopicText(userText, 42);
-                const phrase = source
-                    .replace(/^(请|帮我|帮忙|能不能|可以|麻烦|我要|我想|优化|实现|修复|解释)\s*/i, '')
-                    .replace(/[？?。！!,，；;:].*$/, '')
-                    .trim();
-                return phrase ? phrase.slice(0, 18) : '一般对话';
-            }
-
-            function summarizeTurnForTopic(userText, aiText) {
-                const user = cleanTopicText(userText, 96);
-                const ai = cleanTopicText(aiText, 120);
-                if (!ai) return user || '已记录一次话题互动';
-                if (!user) return ai;
-                return memorySystem._mergeContent('用户关注：' + user, '当前结果：' + ai).slice(0, 220);
-            }
-
-            function classifyTopicNode(userText, aiText, forcedType) {
-                const combined = cleanTopicText((userText || '') + ' ' + (aiText || ''), 360);
-                if (!combined || isLowValueTurn(userText, aiText)) return null;
-
-                const rules = [
-                    { type: 'error', label: '错误', pattern: /错误|失败|报错|异常|崩溃|无法|不能|拒绝访问|failed|error|exception|blocked/i },
-                    { type: 'todo', label: '待办', pattern: /待办|下一步|需要继续|未完成|稍后|之后|提醒|计划|todo|pending|blocked/i },
-                    { type: 'decision', label: '决策', pattern: /决定|选择|采用|不要|改为|改成|必须|保留|目标|规则|优先|最多|只记录|不要把/i },
-                    { type: 'state', label: '状态', pattern: /已完成|完成了|已修复|修复了|已新增|新增了|已删除|已保存|已导入|已导出|已清理|开启|关闭|更新为|接入/i },
-                    { type: 'conclusion', label: '结论', pattern: /结论|总结|最终|因此|所以|原因是|定位到|确认是|验证通过|测试通过/i },
-                    { type: 'explanation', label: '解释', pattern: /解释|原因|原理|区别|意味着|建议/i },
-                ];
-                const rule = forcedType
-                    ? rules.find(item => item.type === forcedType)
-                    : rules.find(item => item.pattern.test(combined));
-                if (!rule) return null;
-
-                const source = cleanTopicText(aiText, 150) || cleanTopicText(userText, 150);
-                if (!source) return null;
-                return {
-                    type: rule.type,
-                    label: rule.label,
-                    text: source,
-                    timestamp: Date.now(),
-                };
-            }
-
-            function normalizeTopicCard(card) {
-                const topicGroup = cleanTopicText(card && card.topicGroup, 48) || '一般对话';
-                const rawMessages = Array.isArray(card && card.rawMessages)
-                    ? card.rawMessages
-                        .filter(msg => msg && msg.role && msg.content)
-                        .map(msg => ({
-                            role: msg.role === 'assistant' ? 'assistant' : 'user',
-                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
-                            timestamp: msg.timestamp || Date.now(),
-                        }))
-                    : [];
-                const keyNodes = Array.isArray(card && card.keyNodes)
-                    ? card.keyNodes
-                        .filter(node => node && node.text)
-                        .map(node => ({
-                            type: node.type || 'conclusion',
-                            label: node.label || '结论',
-                            text: cleanTopicText(node.text, 180),
-                            timestamp: node.timestamp || Date.now(),
-                        }))
-                    : [];
-                return {
-                    topicGroup,
-                    latestSummary: cleanTopicText(card && card.latestSummary, 220) || '已聚合相关对话。',
-                    keyNodes: compressTopicNodes(keyNodes),
-                    rawMessages,
-                    messageCount: Number(card && card.messageCount) || rawMessages.length,
-                    lastUpdated: Number(card && card.lastUpdated) || Date.now(),
-                    status: card && card.status === 'failed' ? 'failed' : 'ok',
-                    failureReason: cleanTopicText(card && card.failureReason, 220),
-                    failureTime: Number(card && card.failureTime) || 0,
-                    retryId: card && card.retryId ? String(card.retryId) : '',
-                    rawOutput: card && card.rawOutput ? String(card.rawOutput).slice(0, 2000) : '',
-                };
-            }
-
-            function createTopicFailureCard(rawMessages, reason, rawOutput = '') {
-                const messages = Array.isArray(rawMessages)
-                    ? rawMessages
-                        .filter(msg => msg && msg.role && msg.content)
-                        .slice(0, MAX_TOPIC_ORGANIZE_BATCH_MESSAGES)
-                        .map(msg => ({
-                            role: msg.role === 'assistant' ? 'assistant' : 'user',
-                            content: stripMemoryUpdateMarkers(String(msg.content || '')),
-                            timestamp: msg.timestamp || Date.now(),
-                        }))
-                    : [];
-                const failureTime = Date.now();
-                return normalizeTopicCard({
-                    topicGroup: '整理失败待重试',
-                    latestSummary: '本批话题整理失败，原始消息已保留，稍后可重新整理。',
-                    keyNodes: [{
-                        type: 'error',
-                        label: '错误',
-                        text: reason || 'JSON 解析失败',
-                        timestamp: failureTime,
-                    }],
-                    rawMessages: messages,
-                    messageCount: messages.length,
-                    lastUpdated: failureTime,
-                    status: 'failed',
-                    failureReason: reason || 'JSON 解析失败',
-                    failureTime,
-                    retryId: 'topic-retry-' + failureTime + '-' + Math.random().toString(36).slice(2, 8),
-                    rawOutput,
-                });
-            }
-
-            function recordTopicOrganizeFailure(rawMessages, reason, rawOutput = '') {
-                const card = createTopicFailureCard(rawMessages, reason, rawOutput);
-                if (card.rawMessages.length === 0) return null;
-                debugLog('[topic-organize] local topic card write disabled:', {
-                    reason,
-                    messageCount: card.messageCount,
-                    failureTime: card.failureTime,
-                    rawOutput,
-                });
-                return card;
-            }
-
-            function compressTopicNodes(nodes) {
-                const normalized = (nodes || []).filter(node => node && node.text);
-                const deduped = [];
-                normalized.forEach(node => {
-                    const existing = deduped.find(item =>
-                        item.type === node.type && memorySystem._similarity(item.text, node.text) > 0.74
-                    );
-                    if (existing) {
-                        existing.text = cleanTopicText(memorySystem._mergeContent(existing.text, node.text), 180);
-                        existing.timestamp = Math.max(existing.timestamp || 0, node.timestamp || 0);
-                    } else {
-                        deduped.push(node);
-                    }
-                });
-
-                while (deduped.length > MAX_TOPIC_KEY_NODES) {
-                    const mergeIndex = deduped.findIndex((node, index) =>
-                        index < deduped.length - 1 &&
-                        (node.type === 'explanation' || node.type === 'conclusion') &&
-                        (deduped[index + 1].type === 'explanation' || deduped[index + 1].type === 'conclusion')
-                    );
-                    if (mergeIndex >= 0) {
-                        const merged = {
-                            type: 'conclusion',
-                            label: '结论',
-                            text: cleanTopicText(memorySystem._mergeContent(deduped[mergeIndex].text, deduped[mergeIndex + 1].text), 180),
-                            timestamp: Math.max(deduped[mergeIndex].timestamp || 0, deduped[mergeIndex + 1].timestamp || 0),
-                        };
-                        deduped.splice(mergeIndex, 2, merged);
-                        continue;
-                    }
-
-                    const removableIndex = deduped.findIndex(node => !['decision', 'todo', 'error'].includes(node.type));
-                    if (removableIndex >= 0) {
-                        deduped.splice(removableIndex, 1);
-                    } else {
-                        deduped.splice(0, deduped.length - MAX_TOPIC_KEY_NODES);
-                    }
-                }
-                return deduped;
-            }
-
-            function findTopicCard(topicGroup, summaryText) {
-                let best = null;
-                let bestScore = 0;
-                topicCards.forEach(card => {
-                    if (card.topicGroup === topicGroup) {
-                        best = card;
-                        bestScore = 1;
-                        return;
-                    }
-                    const score = Math.max(
-                        memorySystem._similarity(card.topicGroup, topicGroup),
-                        memorySystem._similarity(card.latestSummary, summaryText)
-                    );
-                    if (score > bestScore) {
-                        best = card;
-                        bestScore = score;
-                    }
-                });
-                return bestScore >= 0.58 ? best : null;
-            }
-
-            function upsertTopicCardForTurn(userMsg, aiMsg, options = {}) {
-                debugLog('[topic-organize] local topic card write disabled');
-            }
-
-            function organizeTopicMessagesBatch(messages, options = {}) {
-                return 0;
-            }
-
-            function rebuildTopicCardsFromHistory() {
-                return 0;
-            }
-
-            function retryFailedTopicCard(retryId) {
-                showToast('本地话题卡片已停用，请使用异步话题索引');
-            }
-
-            function mergeImportedTopicCards(importedCards) {
-                return 0;
-            }
-
             function compactConversationHistory() {
                 if (conversationHistory.length <= MAX_STORED_CHAT_MESSAGES) return;
                 const overflowCount = conversationHistory.length - MAX_STORED_CHAT_MESSAGES;
@@ -4242,9 +3851,10 @@
 
             function updateStateEngineForTurn(userMsg, aiMsg) {
                 try {
+                    const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
                     stateEngine.updateFromTurn(userMsg, aiMsg, {
                         history: conversationHistory,
-                        topics: topicCards,
+                        topics: topicState && Array.isArray(topicState.topics) ? topicState.topics : [],
                     });
                 } catch (error) {
                     console.warn('状态引擎更新失败:', error);
@@ -4253,7 +3863,6 @@
             }
 
             function commitTurnClosedLoop(userMsg, aiMsg, options = {}) {
-                const topicCountBeforeCommit = topicCards.length;
                 const userMessage = ensureConversationMessageId(userMsg);
                 const aiMessage = aiMsg ? ensureConversationMessageId(aiMsg) : null;
 
@@ -4266,22 +3875,18 @@
                 persistChatHistory();
                 updateMemoryPanel();
 
-                if (topicCards.length !== topicCountBeforeCommit) {
-                    memoryViolation('commitTurnClosedLoop topic write', 'topic');
-                }
-
                 const storage = summarizeMemoryStorage();
                 const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
                 return writeRuntimeSelfCheck(options.stage || 'turn-closed-loop', {
                     hasUserMessage: !!userMessage,
                     assistantMessageHandled: options.expectAssistant === false || !!aiMessage,
                     memoryRuntimeStorageSynced: storage.isRuntimeStorageSynced,
-                    localTopicCards: topicCards.length,
                     topicIndexLoaded: !topicMemoryManager || !!topicState,
                     topicIndexPending: topicState ? (topicState.pendingCount || 0) : 0,
                     chatHistoryPersisted: !!safeParseStorage(STORAGE_KEYS.CHAT_HISTORY).raw,
                     memoryReadable: memorySystem.getMemorySummary() !== '',
-                    topicReadable: topicCards.length === 0 || getTopicMemorySummary() !== '',
+                    topicReadable: !topicState || !Array.isArray(topicState.topics) ||
+                        topicState.topics.length === 0 || getTopicMemorySummary() !== '',
                 }, options.warn ? 'warn' : 'info');
             }
 
@@ -4937,7 +4542,7 @@
                     "",
                     "状态引擎规则：",
                     "- 不要把它当聊天总结器或记忆摘要器；它维护用户正在做什么、为什么做、状态如何迁移。",
-                    "- persistentGoal 是长期目标，权重高于最近话题；最近聊话题卡片或状态节点时，也不要把长期目标改成这些局部任务。",
+                    "- persistentGoal 是长期目标，权重高于最近话题；最近聊近期话题或状态节点时，也不要把长期目标改成这些局部任务。",
                     "- stateTransitions 记录状态迁移链，不记录普通事件流水。格式是 from / trigger / to。",
                     "- persistentBlockers 必须持续追踪，即使用户最近没提也不要删除。",
                     "- 允许做隐含推理，但必须给 evidence 和 confidence。",
@@ -5282,14 +4887,6 @@
                         messageId: aiMsgForHistory.id,
                     });
                     conversationHistory.push(aiMsgForHistory);
-                    if (parsedAiResponse.memoryParseError) {
-                        recordTopicOrganizeFailure(
-                            [userMsgForHistory, aiMsgForHistory],
-                            parsedAiResponse.memoryParseError,
-                            parsedAiResponse.memoryParseRaw || parsedAiResponse.raw
-                        );
-                    }
-
                     // AI response summaries are not written directly; only MEMORY_UPDATE may write memory.
 
                     commitTurnClosedLoop(userMsgForHistory, aiMsgForHistory, {
@@ -5331,7 +4928,6 @@
             function clearChatHistory() {
                 conversationHistory = [];
                 conversationSummary = '';
-                topicCards = createGuardedTopicCards([]);
                 messagesContainer.innerHTML = '';
                 try {
                     localStorage.removeItem(STORAGE_KEYS.CHAT_HISTORY);
@@ -5481,82 +5077,12 @@
                 if (!memLong || !memVolatile) return;
 
                 if (sidebarStats) {
-                    sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条 · 话题 ' + topicCards.length + ' 个';
+                    const topicState = topicMemoryManager ? topicMemoryManager.getState() : null;
+                    const topicCount = topicState && Array.isArray(topicState.topics) ? topicState.topics.length : 0;
+                    sidebarStats.textContent = '对话记录 ' + conversationHistory.length + ' 条 · 近期话题 ' + topicCount + ' 个';
                 }
 
                 renderStateEnginePanel();
-
-                if (memTopics) {
-                    const cards = topicCards
-                        .map(normalizeTopicCard)
-                        .sort((a, b) => (b.lastUpdated || 0) - (a.lastUpdated || 0))
-                        .slice(0, 8);
-                    let topicHTML = '<h4><span class="dot dot-long"></span>话题卡片（' + topicCards.length + '个）</h4>';
-                    if (cards.length === 0) {
-                        topicHTML += '<div class="empty-hint">暂无高价值话题记录</div>';
-                    } else {
-                        cards.forEach(card => {
-                            const lastUpdated = card.lastUpdated
-                                ? new Date(card.lastUpdated).toLocaleString('zh-CN', {
-                                    month: '2-digit',
-                                    day: '2-digit',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                })
-                                : '未知';
-                            const nodes = (card.keyNodes || []).slice(-MAX_TOPIC_KEY_NODES);
-                            const nodesHTML = nodes.length > 0
-                                ? '<ol class="topic-nodes">' + nodes.map(node =>
-                                    '<li><strong>' + escapeHTML(node.label || node.type || '节点') + '</strong> ' +
-                                    escapeHTML(node.text || '') + '</li>'
-                                ).join('') + '</ol>'
-                                : '<div class="empty-hint">暂无决策、待办、错误或结论节点</div>';
-                            const rawHTML = (card.rawMessages || []).map(msg => {
-                                const role = msg.role === 'assistant' ? 'AI' : '用户';
-                                const time = msg.timestamp
-                                    ? new Date(msg.timestamp).toLocaleString('zh-CN', {
-                                        month: '2-digit',
-                                        day: '2-digit',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                    })
-                                    : '';
-                                return '<div class="topic-raw-message"><span class="topic-raw-role">' +
-                                    escapeHTML(role + (time ? ' ' + time : '')) +
-                                    '</span>：' + escapeHTML(cleanTopicText(msg.content, 260)) + '</div>';
-                            }).join('');
-                            const isFailed = card.status === 'failed';
-                            const failureTime = card.failureTime
-                                ? new Date(card.failureTime).toLocaleString('zh-CN', {
-                                    month: '2-digit',
-                                    day: '2-digit',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                })
-                                : lastUpdated;
-                            const failureHTML = isFailed
-                                ? '<div class="topic-failure">' +
-                                    '<div><strong>失败原因</strong>：' + escapeHTML(card.failureReason || 'JSON 解析失败') + '</div>' +
-                                    '<div><strong>失败时间</strong>：' + escapeHTML(failureTime) + '</div>' +
-                                    '<div><strong>消息数量</strong>：' + escapeHTML(String(card.messageCount || 0)) + '</div>' +
-                                    '</div>' +
-                                    '<button type="button" class="topic-retry-btn" data-topic-retry="' +
-                                    encodeURIComponent(card.retryId || '') + '">重新整理失败话题</button>'
-                                : '';
-                            topicHTML += '<details class="topic-card' + (isFailed ? ' failed' : '') + '">' +
-                                '<summary>' +
-                                '<div class="topic-title">' + escapeHTML(card.topicGroup) + '</div>' +
-                                '<div class="topic-summary">' + escapeHTML(card.latestSummary) + '</div>' +
-                                '<div class="topic-meta">' + card.messageCount + ' 条消息 · ' + lastUpdated + '</div>' +
-                                '</summary>' +
-                                failureHTML +
-                                nodesHTML +
-                                '<div class="topic-raw">' + (rawHTML || '<div class="empty-hint">暂无原始消息</div>') + '</div>' +
-                                '</details>';
-                        });
-                    }
-                    memTopics.innerHTML = topicHTML;
-                }
                 renderTopicMemoryPanel();
 
                 if (memUserProfile) {
@@ -5783,7 +5309,7 @@
             // ==================== 自动保存记忆 ====================
             function exportMemoryToFile() {
                 compactConversationHistory();
-                const data = memorySystem.exportData(conversationHistory, conversationSummary, topicCards);
+                const data = memorySystem.exportData(conversationHistory, conversationSummary);
                 if (topicMemoryManager) data.topicMemory = topicMemoryManager.getState();
                 data.userProfile = memoryUserProfile;
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -5847,7 +5373,7 @@
 
             btnExportMem.addEventListener('click', function() {
                 compactConversationHistory();
-                const data = memorySystem.exportData(conversationHistory, conversationSummary, topicCards);
+                const data = memorySystem.exportData(conversationHistory, conversationSummary);
                 if (topicMemoryManager) data.topicMemory = topicMemoryManager.getState();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 downloadFile(blob, 'ai-backup-' + formatDateTime() + '.json');
@@ -5923,19 +5449,9 @@
                             
                             if (chatImported > 0 || hasOverlappingTimestamps) {
                                 conversationHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-                                for (let i = 0; i < conversationHistory.length; i += MAX_TOPIC_ORGANIZE_BATCH_MESSAGES) {
-                                    organizeTopicMessagesBatch(
-                                        conversationHistory.slice(i, i + MAX_TOPIC_ORGANIZE_BATCH_MESSAGES),
-                                        { force: false }
-                                    );
-                                }
                                 hasChatChanges = true;
-                                hasTopicChanges = true;
                             }
                         }
-
-                        topicImported = mergeImportedTopicCards(imported.topicCards);
-                        hasTopicChanges = hasTopicChanges || topicImported > 0;
 
                         const memoryCountsBeforeImport = memorySystem.getDebugSnapshot();
                         memorySystem._applyMemoryData(imported, 'UI/import');
@@ -5978,6 +5494,7 @@
                                     renderMessage(role, msg.content, msg.timestamp, { messageId: msg.id });
                                 }
                             });
+                            enqueueTopicMemory();
                         }
 
                         let msg = '导入完成：';
@@ -6065,17 +5582,6 @@
             sendBtn.addEventListener('click', sendMessage);
             window.addEventListener('aether-memory-updated', updateMemoryPanel);
             window.addEventListener('aether-state-updated', updateMemoryPanel);
-            if (memTopics) {
-                memTopics.addEventListener('click', (event) => {
-                    const retryButton = event.target && event.target.closest
-                        ? event.target.closest('[data-topic-retry]')
-                        : null;
-                    if (!retryButton) return;
-                    event.preventDefault();
-                    retryFailedTopicCard(decodeURIComponent(retryButton.dataset.topicRetry || ''));
-                });
-            }
-
             // ==================== 初始化 ====================
             function init() {
                 populateSettingsForm();
@@ -6097,11 +5603,9 @@
                             const parsed = parsedResult.value;
                             if (Array.isArray(parsed) && parsed.length > 0) {
                                 conversationHistory = parsed;
-                                topicCards = createGuardedTopicCards([]);
                             } else if (parsed && Array.isArray(parsed.messages)) {
                                 conversationHistory = parsed.messages;
                                 conversationSummary = '';
-                                topicCards = createGuardedTopicCards([]);
                             }
                             if (conversationHistory.length > 0) {
                                 normalizeConversationHistoryIds();
@@ -6138,7 +5642,6 @@
                 debugLog('🧠 AI记忆聊天系统已就绪');
                 debugLog('  - 最近对话:', conversationHistory.length, '/', MAX_STORED_CHAT_MESSAGES, '条');
                 debugLog('  - 历史摘要:', conversationSummary ? conversationSummary.split('\n').length : 0, '条');
-                debugLog('  - 话题卡片:', topicCards.length, '个');
                 debugLog('  - 长期记忆:', countLongTermEntries(), '条');
                 debugLog('  - 波动记忆:', countVolatileEntries(), '条');
                 writeRuntimeSelfCheck('startup', {
@@ -6146,7 +5649,6 @@
                     chatHistoryLoaded: Array.isArray(conversationHistory),
                     memoryRuntimeStorageSynced: summarizeMemoryStorage().isRuntimeStorageSynced,
                     mobileSidebarNonBlocking: !isMobileViewport() || sidebar.classList.contains('collapsed'),
-                    topicCardsReady: Array.isArray(topicCards),
                     topicIndexReady: !topicMemoryManager || !!topicMemoryManager.getState(),
                     inputEnabled: !userInput.disabled,
                 });
@@ -6195,8 +5697,6 @@
                 getSelectedMemory: () => selectedMemory,
                 clearSelectedMemory,
                 getConversationSummary: () => conversationSummary,
-                getTopicCards: () => topicCards,
-                rebuildTopicCardsFromHistory,
                 getActiveFocus: () => activeFocus,
                 getStateEngine: () => stateEngine.getState(),
                 refreshStateEngine: () => {
