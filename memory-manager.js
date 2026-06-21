@@ -34,7 +34,6 @@ function readMemoryFile(filePath) {
 // 合并多个记忆文件
 function mergeMemoryFiles(files) {
     const merged = {
-        shortTerm: { entries: [] },
         longTerm: { expenses: [], preferences: [], basicInfo: { age: null, job: null, pets: [], tools: [] }, aiLearning: [], facts: [] },
         volatile: { plans: [], temporaryEvents: [] },
         chatHistory: [],
@@ -42,7 +41,6 @@ function mergeMemoryFiles(files) {
         mergedAt: new Date().toISOString(),
     };
 
-    const seenShortTerm = new Set();
     const seenLongTerm = new Set();
     const seenVolatile = new Set();
     const seenChat = new Set();
@@ -59,15 +57,6 @@ function mergeMemoryFiles(files) {
                     seenChat.add(key);
                     merged.chatHistory.push(msg);
                 }
-            }
-        });
-
-        // 合并短期记忆
-        (data.shortTerm?.entries || []).forEach(entry => {
-            const key = JSON.stringify(entry);
-            if (!seenShortTerm.has(key)) {
-                seenShortTerm.add(key);
-                merged.shortTerm.entries.push(entry);
             }
         });
 
@@ -139,7 +128,6 @@ function mergeMemoryFiles(files) {
 
     // 按时间排序
     merged.chatHistory.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    merged.shortTerm.entries.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.expenses.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.preferences.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     merged.longTerm.aiLearning.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
@@ -167,7 +155,6 @@ function cleanupOldBackups(files, maxKeep = MAX_BACKUPS) {
 function showStats(data) {
     console.log('\n📊 记忆统计:');
     console.log(`  ├── 对话历史: ${data.chatHistory ? data.chatHistory.length : 0} 条`);
-    console.log(`  ├── 短期记忆: ${data.shortTerm.entries.length} 条`);
     console.log(`  ├── 长期记忆:`);
     console.log(`  │   ├── 支出记录: ${data.longTerm.expenses.length} 条`);
     console.log(`  │   ├── 偏好设置: ${data.longTerm.preferences.length} 条`);
