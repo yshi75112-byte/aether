@@ -48,6 +48,28 @@
             Math.random().toString(36).slice(2, 8);
     }
 
+    const TOPIC_NOISE_TEXTS = new Set([
+        '要', '的', '了', '是', '我', '你', '他', '她', '它', '吗', '呢', '啊', '呀', '吧',
+        '和', '与', '及', '在', '就', '都', '也', '又', '还', '很', '被', '把', '让', '给',
+        '嗯', '哦', '噢', '诶', '哎', '好', '行', '可', '好的', '好吧', '可以', '收到',
+        '知道了', '明白', '明白了', '谢谢', '谢了', 'ok', 'okay', 'yes', 'no',
+    ]);
+
+    function normalizeMeaningfulText(value) {
+        const source = String(value || '').trim();
+        const normalized = typeof source.normalize === 'function' ? source.normalize('NFKC') : source;
+        return normalized
+            .toLowerCase()
+            .replace(/[\s\u3000!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~，。！？、；：“”‘’（）【】《》〈〉…—·]+/g, '');
+    }
+
+    function isMeaningfulTopicText(value) {
+        const normalized = normalizeMeaningfulText(value);
+        if (TOPIC_NOISE_TEXTS.has(normalized)) return false;
+        if (Array.from(normalized).length < 2) return false;
+        return /[a-z0-9\u3400-\u9fff]/i.test(normalized);
+    }
+
     function normalizeMessage(msg, index) {
         if (!msg || !msg.content) return null;
         const role = msg.role === 'assistant' || msg.role === 'ai' ? 'assistant' : 'user';
@@ -235,7 +257,9 @@
 
         normalizeState(state) {
             const next = { ...clone(DEFAULT_STATE), ...(state || {}) };
-            next.topics = Array.isArray(next.topics) ? next.topics.map(compactTopic) : [];
+            next.topics = Array.isArray(next.topics)
+                ? next.topics.map(compactTopic).filter(topic => isMeaningfulTopicText(topic.title))
+                : [];
             next.marker = next.marker && typeof next.marker === 'object'
                 ? { ...DEFAULT_STATE.marker, ...next.marker }
                 : clone(DEFAULT_STATE.marker);
@@ -482,7 +506,7 @@
         applyFallbackTopics(messages, options = {}) {
             const groups = new Map();
             (messages || []).forEach(message => {
-                if (!message || !message.content) return;
+                if (!message || !message.content || !isMeaningfulTopicText(message.content)) return;
                 const category = this.inferCategory(message.content);
                 if (!groups.has(category)) groups.set(category, []);
                 groups.get(category).push(message);
@@ -542,6 +566,8 @@
                         '每个 chain 节点只写概述标签，不写时间；节点顺序代表因果时间顺序。',
                         '如果消息属于测试、纠错、计划、偏好、工具问题等，请给出简短明确的 title。',
                         'title 和 label 必须简短，避免引号、换行和列表符号。',
+                        '忽略“要、的、了、嗯、好、收到”等无实际主题的信息；禁止把单字、语气词、停用词或纯标点创建为 topic 或 chain 节点。',
+                        '新建 topic 的 title 至少包含 2 个有效字符，并能概括具体对象、任务或事件。',
                         'category 优先沿用已有话题检测分类；summary 不超过 60 字；facts 最多 5 条，每条不超过 50 字。',
                         '最多返回 8 个 topics；每个 topic 最多 6 个 chain 节点。',
                         '输出 schema：{"topics":[{"topic_id":"topic_x","category":"分类","title":"短标题","summary":"短摘要","facts":["关键事实"],"updated_at":毫秒时间戳,"messageIds":["msg"],"chain":[{"id":"node_x","label":"概述","messageIds":["msg"]}]}],"marker":{"lastProcessedMessageId":"msg","lastProcessedAt":毫秒时间戳}}',
@@ -570,7 +596,7 @@
             const incomingTopics = Array.isArray(result && result.topics) ? result.topics : [];
             const sanitized = incomingTopics
                 .map(topic => this.sanitizeTopic(topic, messageIdSet))
-                .filter(topic => topic.title && topic.messageIds.length > 0);
+                .filter(topic => isMeaningfulTopicText(topic.title) && topic.messageIds.length > 0);
 
             this.state.topics = this.mergeTopics(this.state.topics, sanitized)
                 .sort((a, b) => (a.startTime || 0) - (b.startTime || 0))
@@ -593,7 +619,7 @@
                     id: node.id || safeId('node'),
                     label: String(node.label || '').trim().slice(0, 40),
                     messageIds: this.uniqueIds(node.messageIds, messageIdSet),
-                })).filter(node => node.label && node.messageIds.length > 0)
+                })).filter(node => isMeaningfulTopicText(node.label) && node.messageIds.length > 0)
                 : [];
             const messageIds = this.uniqueIds(
                 (topic && topic.messageIds) || chain.flatMap(node => node.messageIds),
@@ -624,12 +650,13 @@
             const byId = new Map();
             (existing || []).forEach(topic => {
                 const clean = compactTopic(topic);
-                if (clean && clean.id) byId.set(clean.id, clean);
+                if (clean && clean.id && isMeaningfulTopicText(clean.title)) byId.set(clean.id, clean);
             });
 
             (incoming || []).forEach(topic => {
                 if (!topic) return;
                 let clean = compactTopic(topic);
+                if (!isMeaningfulTopicText(clean.title)) return;
                 let prior = clean.id ? byId.get(clean.id) : null;
                 if (!prior) {
                     prior = Array.from(byId.values()).find(candidate => this.topicSimilarity(candidate, clean) >= 0.62) || null;

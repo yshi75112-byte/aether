@@ -253,6 +253,24 @@
             margin-top: 3px;
             color: var(--text-secondary);
         }
+        .topic-list-toggle {
+            width: 100%;
+            margin-top: 8px;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #f8f6f0;
+            color: var(--accent-soft);
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease;
+        }
+        .topic-list-toggle:hover,
+        .topic-list-toggle:focus-visible {
+            background: #f0ede5;
+            color: var(--accent);
+            outline: none;
+        }
         @keyframes topic-spin {
             to {
                 transform: rotate(360deg);
@@ -1344,6 +1362,8 @@
             let conversationSummary = '';
             let messageSequence = 0;
             const MAX_STORED_CHAT_MESSAGES = 120;
+            const TOPIC_PANEL_PREVIEW_LIMIT = 8;
+            let isTopicPanelExpanded = false;
             const MAX_API_HISTORY_MESSAGES = 24;
             const MAX_SUMMARY_ITEMS = 40;
             const SUMMARY_MERGE_SIMILARITY = 0.56;
@@ -4561,7 +4581,11 @@
                     return;
                 }
 
-                topics.slice(-8).reverse().forEach(topic => {
+                const visibleTopics = isTopicPanelExpanded
+                    ? topics
+                    : topics.slice(-TOPIC_PANEL_PREVIEW_LIMIT);
+
+                visibleTopics.slice().reverse().forEach(topic => {
                     const facts = (topic.facts || []).slice(0, 3).join('；');
                     const summaryText = topic.summary || facts || ((topic.chain || []).map(node => node.label).filter(Boolean).slice(-2).join(' → ')) || '暂无摘要';
                     const updatedAt = topic.updated_at || topic.updatedAt || topic.startTime;
@@ -4584,6 +4608,16 @@
                         '<div class="topic-chain">' + escapeHTML(summaryText) + '</div>' +
                         '</div>';
                 });
+
+                if (topics.length > TOPIC_PANEL_PREVIEW_LIMIT) {
+                    const hiddenCount = topics.length - TOPIC_PANEL_PREVIEW_LIMIT;
+                    const toggleText = isTopicPanelExpanded
+                        ? '收起，仅显示最近 ' + TOPIC_PANEL_PREVIEW_LIMIT + ' 个'
+                        : '展开全部（另有 ' + hiddenCount + ' 个）';
+                    html += '<button type="button" class="topic-list-toggle" aria-expanded="' +
+                        (isTopicPanelExpanded ? 'true' : 'false') + '">' +
+                        escapeHTML(toggleText) + '</button>';
+                }
 
                 panel.innerHTML = html;
             }
@@ -5060,6 +5094,13 @@
             }
 
             sidebarContent.addEventListener('click', function(e) {
+                const topicToggle = e.target.closest('.topic-list-toggle');
+                if (topicToggle && sidebarContent.contains(topicToggle)) {
+                    isTopicPanelExpanded = !isTopicPanelExpanded;
+                    renderTopicMemoryPanel();
+                    return;
+                }
+
                 const item = e.target.closest('.mem-item[data-memory-target]');
                 if (!item || !sidebarContent.contains(item)) return;
                 selectMemoryItemElement(item);
@@ -5085,7 +5126,12 @@
             });
 
             userInput.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key !== 'Enter') return;
+
+                // 移动端软键盘的 Enter 应保留默认换行行为；输入法组词期间也不发送。
+                if (isMobileViewport() || e.isComposing || e.keyCode === 229) return;
+
+                if (!e.shiftKey) {
                     e.preventDefault();
                     sendMessage();
                 }
