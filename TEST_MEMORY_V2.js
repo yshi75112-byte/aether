@@ -184,7 +184,14 @@ function testHistoryOverflowProfile() {
         localStorage: storage,
         MAX_STORED_CHAT_MESSAGES: 120,
         USER_PROFILE_SECTIONS: sections,
-        memoryUserProfile: { version: 1, updated_at: null, sections: Object.fromEntries(Object.keys(sections).map(k => [k, []])) },
+        memoryUserProfile: {
+            version: 1,
+            updated_at: null,
+            manual_basic: {},
+            sections: Object.fromEntries(Object.keys(sections).map(k => [k, []])),
+            observed_candidates: [],
+            uncategorized_candidates: [],
+        },
         memorySystem: { _similarity: (a, b) => a === b ? 1 : 0 },
         topicMemoryManager: { applyFallbackTopics() {} },
         conversationHistory: Array.from({ length: 125 }, (_, i) => ({
@@ -203,8 +210,14 @@ function testHistoryOverflowProfile() {
     vm.runInContext(code + '\ncompactConversationHistory();', context);
     assert.strictEqual(context.conversationHistory.length, 120, '聊天缓存仍应保持 120 条窗口');
     const profile = JSON.parse(storage.getItem('memory_user_profile'));
-    assert(profile.sections.project_goals.some(item => item.text.includes('项目目标')), '早期项目目标应进入用户画像');
-    assert(profile.sections.background_information.some(item => item.text.includes('请记住')), '不重复解释的背景应进入用户画像');
+    assert(!profile.sections.project_goals.some(item => item.text.includes('项目目标')), '早期项目目标不应直接进入正式画像');
+    assert(!profile.sections.background_information.some(item => item.text.includes('请记住')), '背景信息不应直接进入正式画像');
+    assert(profile.observed_candidates.some(item =>
+        item.section === 'project_goals' && item.text.includes('项目目标')
+    ), '早期项目目标应进入低可信观察候选池');
+    assert(profile.observed_candidates.some(item =>
+        item.section === 'background_information' && item.text.includes('请记住')
+    ), '不重复解释的背景应进入低可信观察候选池');
 }
 
 (async () => {

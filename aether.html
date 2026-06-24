@@ -281,6 +281,43 @@
             color: var(--white);
             border-color: var(--accent-soft);
         }
+        .profile-observation {
+            margin-top: 7px;
+            padding: 7px 8px;
+            border: 1px dashed #ddd4c5;
+            border-radius: 8px;
+            background: #fffdf8;
+        }
+        .profile-observation-text {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            line-height: 1.45;
+        }
+        .profile-observation-meta {
+            margin-top: 2px;
+            font-size: 0.62rem;
+            color: var(--text-muted);
+        }
+        .profile-observation-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .profile-observation-actions button {
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--white);
+            color: var(--text-secondary);
+            font-size: 0.66rem;
+            padding: 4px 8px;
+            cursor: pointer;
+        }
+        .profile-observation-actions button.primary {
+            background: #f7f2e8;
+            color: var(--accent);
+            border-color: #d8cdbd;
+        }
         .memory-section h4 .dot {
             width: 7px;
             height: 7px;
@@ -1761,6 +1798,7 @@
                         result[key] = [];
                         return result;
                     }, {}),
+                    observed_candidates: [],
                     uncategorized_candidates: [],
                 };
             }
@@ -1783,6 +1821,9 @@
                         normalized.manual_basic[key] = String(normalized.manual_basic[key]).trim();
                     }
                 });
+                if (!Array.isArray(normalized.observed_candidates)) {
+                    normalized.observed_candidates = [];
+                }
                 if (!Array.isArray(normalized.uncategorized_candidates)) {
                     normalized.uncategorized_candidates = [];
                 }
@@ -3544,6 +3585,65 @@
                 if (list.length > 80) list.splice(0, list.length - 80);
             }
 
+            function mergeUserProfileObservation(section, text, messageId, timestamp) {
+                if (!USER_PROFILE_SECTIONS[section]) return;
+                const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+                if (!clean || clean.length < 3) return;
+                const list = Array.isArray(memoryUserProfile.observed_candidates)
+                    ? memoryUserProfile.observed_candidates
+                    : (memoryUserProfile.observed_candidates = []);
+                const existing = list.find(item =>
+                    item.section === section && profileTextSimilarity(item.text, clean) > 0.72
+                );
+                if (existing) {
+                    if (clean.length > existing.text.length) existing.text = clean;
+                    existing.updated_at = timestamp || Date.now();
+                    existing.observed_count = (existing.observed_count || 1) + 1;
+                    existing.source_message_ids = Array.from(new Set((existing.source_message_ids || []).concat(messageId || []))).slice(-20);
+                    return;
+                }
+                list.push({
+                    id: 'profile_observed_' + section + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+                    section,
+                    text: clean,
+                    created_at: timestamp || Date.now(),
+                    updated_at: timestamp || Date.now(),
+                    observed_count: 1,
+                    source_message_ids: messageId ? [messageId] : [],
+                });
+                if (list.length > 80) list.splice(0, list.length - 80);
+            }
+
+            function approveUserProfileObservation(candidateId) {
+                const list = Array.isArray(memoryUserProfile.observed_candidates)
+                    ? memoryUserProfile.observed_candidates
+                    : [];
+                const index = list.findIndex(item => item && item.id === candidateId);
+                if (index < 0) return false;
+                const candidate = list[index];
+                mergeUserProfileItem(candidate.section, candidate.text, (candidate.source_message_ids || [])[0], Date.now());
+                list.splice(index, 1);
+                memoryUserProfile.updated_at = Date.now();
+                saveUserProfile();
+                updateMemoryPanel();
+                showToast('已加入正式画像');
+                return true;
+            }
+
+            function dismissUserProfileObservation(candidateId) {
+                const list = Array.isArray(memoryUserProfile.observed_candidates)
+                    ? memoryUserProfile.observed_candidates
+                    : [];
+                const index = list.findIndex(item => item && item.id === candidateId);
+                if (index < 0) return false;
+                list.splice(index, 1);
+                memoryUserProfile.updated_at = Date.now();
+                saveUserProfile();
+                updateMemoryPanel();
+                showToast('已忽略候选观察');
+                return true;
+            }
+
             function updateUserProfileFromArchived(messages) {
                 try {
                     (messages || []).filter(msg => msg && msg.role === 'user' && msg.content).forEach(msg => {
@@ -3557,7 +3657,7 @@
                         if (matched.length === 0) {
                             mergeUserProfileCandidate(text, msg.id, msg.timestamp);
                         } else {
-                            matched.forEach(section => mergeUserProfileItem(section, text, msg.id, msg.timestamp));
+                            matched.forEach(section => mergeUserProfileObservation(section, text, msg.id, msg.timestamp));
                         }
                     });
                     memoryUserProfile.updated_at = Date.now();
@@ -3590,6 +3690,31 @@
                         value: String((memoryUserProfile.manual_basic || {})[key] || '').trim(),
                     }))
                     .filter(item => item.value);
+            }
+
+            function getObservedProfileCandidates() {
+                return (Array.isArray(memoryUserProfile.observed_candidates)
+                    ? memoryUserProfile.observed_candidates
+                    : [])
+                    .filter(item => item && USER_PROFILE_SECTIONS[item.section] && item.text)
+                    .slice(-4)
+                    .reverse();
+            }
+
+            function observedProfileCandidateHTML(candidate) {
+                const label = USER_PROFILE_SECTIONS[candidate.section] || '候选画像';
+                const id = encodeURIComponent(candidate.id || '');
+                const countText = candidate.observed_count > 1 ? ' · 出现 ' + candidate.observed_count + ' 次' : '';
+                return [
+                    '<div class="profile-observation">',
+                    '<div class="profile-observation-text">系统观察到：你可能经常提到 ' + escapeHTML(candidate.text) + '</div>',
+                    '<div class="profile-observation-meta">候选分类：' + escapeHTML(label) + countText + '</div>',
+                    '<div class="profile-observation-actions">',
+                    '<button type="button" data-profile-action="dismiss-candidate" data-profile-candidate-id="' + id + '">忽略</button>',
+                    '<button type="button" class="primary" data-profile-action="approve-candidate" data-profile-candidate-id="' + id + '">加入正式画像</button>',
+                    '</div>',
+                    '</div>',
+                ].join('');
             }
 
             function renderManualBasicProfileEditor() {
@@ -4830,7 +4955,9 @@
                     const profileCount = Object.keys(USER_PROFILE_SECTIONS).reduce((count, key) =>
                         count + (memoryUserProfile.sections[key] || []).length, 0);
                     const manualEntries = getManualBasicProfileEntries();
-                    let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条）' +
+                    const observedCandidates = getObservedProfileCandidates();
+                    let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条' +
+                        (observedCandidates.length ? ' · 候选' + observedCandidates.length : '') + '）' +
                         '<span class="memory-title-spacer"></span>' +
                         '<button type="button" class="profile-ghost-toggle" data-profile-action="toggle" title="编辑基础画像">' +
                         (isUserProfileEditorOpen ? '收起' : '编辑') + '</button></h4>';
@@ -4840,6 +4967,9 @@
                     manualEntries.forEach(item => {
                         profileHTML += '<div class="mem-item">' + escapeHTML(item.value) +
                             '<div class="mem-meta">手动基础画像 · ' + escapeHTML(item.label) + '</div></div>';
+                    });
+                    observedCandidates.forEach(candidate => {
+                        profileHTML += observedProfileCandidateHTML(candidate);
                     });
                     Object.entries(USER_PROFILE_SECTIONS).forEach(([key, label]) => {
                         const items = (memoryUserProfile.sections[key] || []).slice(-2).reverse();
@@ -4854,7 +4984,7 @@
                     if (errorLog.length) {
                         profileHTML += '<div class="empty-hint">最近整理失败：' + escapeHTML(errorLog[0].type) + ' · ' + escapeHTML(errorLog[0].message) + '</div>';
                     }
-                    if (!profileCount && !manualEntries.length && !isUserProfileEditorOpen) {
+                    if (!profileCount && !manualEntries.length && !observedCandidates.length && !isUserProfileEditorOpen) {
                         profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
                     }
                     memUserProfile.innerHTML = profileHTML;
@@ -5225,7 +5355,12 @@
                         longImported = Math.max(0, memoryCountsAfterImport.longTerm - memoryCountsBeforeImport.longTerm);
                         volatileImported = Math.max(0, memoryCountsAfterImport.volatile - memoryCountsBeforeImport.volatile);
 
-                        if (imported.userProfile && (imported.userProfile.sections || imported.userProfile.manual_basic)) {
+                        if (imported.userProfile && (
+                            imported.userProfile.sections ||
+                            imported.userProfile.manual_basic ||
+                            imported.userProfile.observed_candidates ||
+                            imported.userProfile.uncategorized_candidates
+                        )) {
                             userProfileLoadFailed = false;
                             if (imported.userProfile.manual_basic && typeof imported.userProfile.manual_basic === 'object') {
                                 const manualImportCount = Object.keys(MANUAL_BASIC_PROFILE_FIELDS)
@@ -5244,6 +5379,9 @@
                                     mergeUserProfileItem(section, item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
                                     profileImported += 1;
                                 });
+                            });
+                            (imported.userProfile.observed_candidates || []).forEach(item => {
+                                mergeUserProfileObservation(item.section, item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
                             });
                             (imported.userProfile.uncategorized_candidates || []).forEach(item => {
                                 mergeUserProfileCandidate(item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
@@ -5333,6 +5471,10 @@
                         updateMemoryPanel();
                     } else if (action === 'save') {
                         saveManualBasicProfileFromPanel();
+                    } else if (action === 'approve-candidate') {
+                        approveUserProfileObservation(decodeURIComponent(profileAction.dataset.profileCandidateId || ''));
+                    } else if (action === 'dismiss-candidate') {
+                        dismissUserProfileObservation(decodeURIComponent(profileAction.dataset.profileCandidateId || ''));
                     }
                     return;
                 }
