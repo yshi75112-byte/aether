@@ -177,10 +177,18 @@ updateMemoryPanel()
 在浏览器控制台运行：
 ```javascript
 // 添加测试数据
-window.memorySystem.updateBasicInfo('age', 25);
-window.memorySystem.updateBasicInfo('job', '设计师');
-window.memorySystem.addPlan('学习', '学习UI设计');
-window.memorySystem.addTemporaryEvent('下午3点开会', '2026-06-01');
+window.memorySystem._applyMemoryData({
+  basicInfo: {
+    age: 25,
+    job: '设计师'
+  },
+  plans: [
+    { type: '学习', content: '学习UI设计' }
+  ],
+  temporaryEvents: [
+    { content: '下午3点开会', estimatedExpiry: '2026-06-01' }
+  ]
+}, 'test/manual');
 
 // 检查 localStorage
 console.log(localStorage.getItem('mem_long_term'));

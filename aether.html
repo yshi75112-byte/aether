@@ -1622,6 +1622,618 @@
                 return false;
             }
 
+            function classifyMemory(data) {
+                if (!data || typeof data !== 'object') return 'unknown';
+                if (data.basicInfo || data.identity) return 'profile';
+                if (data.fact || data.expenses) return 'long_term';
+                if (data.plan || data.temporaryEvents) return 'volatile';
+                if (data.topic || data.conversation) return 'topic';
+                return 'unknown';
+            }
+
+            function estimateImportance(data) {
+                const type = classifyMemory(data);
+                if (type === 'profile') return 0.9;
+                if (type === 'long_term') return 0.75;
+                if (type === 'volatile') return 0.65;
+                if (type === 'topic') return 0.55;
+                return 0.4;
+            }
+
+            function memoryRouterText(value) {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                    return String(value);
+                }
+                if (Array.isArray(value)) return value.map(memoryRouterText).join(' ');
+                if (typeof value === 'object') return Object.values(value).map(memoryRouterText).join(' ');
+                return '';
+            }
+
+            function estimateRepetition(data, context = {}) {
+                const needle = memoryRouterText(data).replace(/\s+/g, ' ').trim().toLowerCase();
+                const messages = Array.isArray(context.recentMessages) ? context.recentMessages : [];
+                if (!needle || messages.length === 0) return 0;
+                const words = Array.from(new Set(needle.split(/\s+/).filter(word => word.length > 1)));
+                let matchedMessages = 0;
+                let bestOverlap = 0;
+                messages.forEach(message => {
+                    const text = String(message && message.content ? message.content : message || '')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .toLowerCase();
+                    if (!text) return;
+                    const directHit = text.includes(needle) || needle.includes(text);
+                    const overlap = words.length
+                        ? words.filter(word => text.includes(word)).length / words.length
+                        : 0;
+                    if (directHit || overlap > 0.45) matchedMessages += 1;
+                    bestOverlap = Math.max(bestOverlap, directHit ? 1 : overlap);
+                });
+                return Math.max(matchedMessages / messages.length, bestOverlap >= 0.6 ? bestOverlap : 0);
+            }
+
+            function clampConfidence(value) {
+                return Math.max(0, Math.min(1, Number(value) || 0));
+            }
+
+            function estimateRepetitionCount(data, context = {}) {
+                if (Number.isFinite(Number(context.repetition))) return Number(context.repetition);
+                if (Number.isFinite(Number(context.repetitionCount))) return Number(context.repetitionCount);
+                const needle = memoryRouterText(data).replace(/\s+/g, ' ').trim().toLowerCase();
+                const messages = Array.isArray(context.recentMessages) ? context.recentMessages : [];
+                if (!needle || messages.length === 0) return 0;
+                const words = Array.from(new Set(needle.split(/\s+/).filter(word => word.length > 1)));
+                return messages.reduce((count, message) => {
+                    const text = String(message && message.content ? message.content : message || '')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .toLowerCase();
+                    if (!text) return count;
+                    const directHit = text.includes(needle) || needle.includes(text);
+                    const overlap = words.length
+                        ? words.filter(word => text.includes(word)).length / words.length
+                        : 0;
+                    return count + (directHit || overlap > 0.45 ? 1 : 0);
+                }, 0);
+            }
+
+            function estimateContradictionPenalty(data, context = {}) {
+                if (Number.isFinite(Number(context.contradictionPenalty))) {
+                    return clampConfidence(context.contradictionPenalty);
+                }
+                const negativeSignals = Array.isArray(context.contradictions) ? context.contradictions.length : 0;
+                if (negativeSignals > 0) return clampConfidence(negativeSignals * 0.2);
+                const text = memoryRouterText(data).toLowerCase();
+                const messages = Array.isArray(context.recentMessages) ? context.recentMessages : [];
+                const contradictionWords = ['不喜欢', '不再', '不是', '取消', '别记', '不要记', 'not', 'never', "don't"];
+                const hasContradiction = messages.some(message => {
+                    const content = String(message && message.content ? message.content : message || '').toLowerCase();
+                    return contradictionWords.some(word => content.includes(word)) &&
+                        text.split(/\s+/).some(token => token && token.length > 1 && content.includes(token));
+                });
+                return hasContradiction ? 0.25 : 0;
+            }
+
+            function confidenceScore(data, context = {}) {
+                const repetitionCount = estimateRepetitionCount(data, context);
+                const repetitionWeight = clampConfidence(
+                    context.repetitionWeight !== undefined
+                        ? context.repetitionWeight
+                        : (repetitionCount <= 0 ? 0.25 : Math.min(0.85, 0.25 + repetitionCount * 0.2))
+                );
+                const consistency = clampConfidence(
+                    context.consistency !== undefined
+                        ? context.consistency
+                        : (repetitionCount >= 3 ? 1 : 0.95)
+                );
+                const contradictionPenalty = estimateContradictionPenalty(data, context);
+                const value = clampConfidence(repetitionWeight * consistency - contradictionPenalty);
+                return {
+                    repetitionWeight,
+                    consistency,
+                    contradictionPenalty,
+                    value,
+                };
+            }
+
+            function scoreMemory(data, context = {}) {
+                const confidence = confidenceScore(data, context);
+                return {
+                    importance: estimateImportance(data),
+                    frequency: estimateRepetition(data, context),
+                    recency: 1,
+                    confidence,
+                    confidenceValue: confidence.value,
+                };
+            }
+
+            function routeMemory(type, score = {}) {
+                if (type === 'profile') return 'memory_user_profile';
+                if (type === 'long_term' && score.frequency > 0.6) return 'mem_long_term';
+                if (type === 'volatile') return 'mem_volatile';
+                if (type === 'topic') return 'mem_topic_memory';
+                return 'mem_long_term';
+            }
+
+            function memoryRouter(update, context) {
+                const normalizedUpdate = update && typeof update === 'object'
+                    ? update
+                    : { type: 'memory_update', data: update || {}, context: context || {} };
+                const data = normalizedUpdate.data || {};
+                const routerContext = context || normalizedUpdate.context || {};
+                const type = classifyMemory(data);
+                const score = scoreMemory(data, routerContext);
+                const target = routeMemory(type, score);
+                console.log('[MemoryRouter]', {
+                    type,
+                    target,
+                    score,
+                });
+                return { target, type, score };
+            }
+
+            class MemoryPromotionEngine {
+                evaluate(input = {}) {
+                    const memory = input.memory && typeof input.memory === 'object' ? input.memory : {};
+                    const score = input.score && typeof input.score === 'object' ? input.score : {};
+                    const historyContext = input.historyContext && typeof input.historyContext === 'object'
+                        ? input.historyContext
+                        : {};
+                    const memoryType = memory.type || input.type || 'unknown';
+
+                    if (memoryType === 'plan' && score.frequency >= 2 && score.importance > 0.6) {
+                        return this.promoteTo('mem_long_term', 'volatile_to_long_term', {
+                            memory,
+                            type: memoryType,
+                            score,
+                            historyContext,
+                        });
+                    }
+
+                    const repeatedAcrossSessions = Number(historyContext.repeatedAcrossSessions || 0);
+                    if (memoryType === 'topic' && repeatedAcrossSessions >= 2) {
+                        return this.promoteTo('profile_candidate', 'topic_to_profile_candidate', {
+                            memory,
+                            type: memoryType,
+                            score,
+                            historyContext,
+                        });
+                    }
+
+                    const confidence = historyContext.confidenceScore || score.confidence || {};
+                    const confidenceValue = typeof confidence === 'object'
+                        ? Number(confidence.value || 0)
+                        : Number(confidence || 0);
+                    const repetition = Number(historyContext.repetition ?? score.frequency ?? 0);
+                    if (memoryType === 'profile_candidate' && confidenceValue >= 0.75 && repetition >= 3) {
+                        return this.promoteTo('memory_user_profile', 'profile_candidate_to_profile_confirmed', {
+                            memory,
+                            type: memoryType,
+                            score,
+                            historyContext,
+                        });
+                    }
+
+                    return {
+                        promoted: false,
+                        target: '',
+                        rule: '',
+                        reason: 'no_promotion',
+                        memory,
+                        type: memoryType,
+                        score,
+                    };
+                }
+
+                promoteTo(target, rule, detail = {}) {
+                    return {
+                        promoted: true,
+                        target,
+                        rule,
+                        reason: rule,
+                        ...detail,
+                    };
+                }
+            }
+
+            class GoalKernel {
+                constructor(initialState = {}) {
+                    this.currentGoal = initialState.currentGoal || null;
+                    this.subGoals = Array.isArray(initialState.subGoals) ? initialState.subGoals : [];
+                }
+
+                getState() {
+                    return {
+                        currentGoal: this.currentGoal,
+                        subGoals: this.subGoals,
+                    };
+                }
+
+                infer(historyContext = {}) {
+                    const messages = Array.isArray(historyContext.recentMessages)
+                        ? historyContext.recentMessages
+                        : [];
+                    const text = messages.map(message => String(message && message.content ? message.content : message || '')).join('\n');
+                    const candidates = this.extractGoalCandidates(text);
+                    const strongest = candidates.find(candidate => candidate.count >= 3);
+                    if (strongest) {
+                        const inferred = this.goalFromCandidate(strongest);
+                        this.switchGoal(inferred);
+                    }
+                    return this.getState();
+                }
+
+                extractGoalCandidates(text) {
+                    const source = String(text || '');
+                    const definitions = [
+                        { id: 'ai_project_build', pattern: /AI|人工智能|助手|agent|记忆系统|memory/gi, description: '完成个人AI助手系统', type: 'long_term_goal', priority: 0.9 },
+                        { id: 'memory_system', pattern: /记忆|memory|router|promotion|synthesis|attention/gi, description: '推进记忆系统重构', type: 'sub_goal', priority: 0.8 },
+                        { id: 'ui_stability', pattern: /UI|界面|稳定|样式|布局/gi, description: '提升界面稳定性', type: 'sub_goal', priority: 0.6 },
+                    ];
+                    return definitions.map(def => ({
+                        ...def,
+                        count: (source.match(def.pattern) || []).length,
+                    })).sort((a, b) => b.count - a.count);
+                }
+
+                goalFromCandidate(candidate) {
+                    return {
+                        id: candidate.id,
+                        priority: candidate.priority,
+                        type: candidate.type === 'sub_goal' ? 'long_term_goal' : candidate.type,
+                        description: candidate.id === 'ai_project_build' ? '完成个人AI助手系统' : candidate.description,
+                    };
+                }
+
+                switchGoal(nextGoal) {
+                    if (!nextGoal) return this.currentGoal;
+                    if (!this.currentGoal || Number(nextGoal.priority || 0) > Number(this.currentGoal.priority || 0)) {
+                        this.currentGoal = nextGoal;
+                    }
+                    this.ensureSubGoals();
+                    return this.currentGoal;
+                }
+
+                ensureSubGoals() {
+                    if (!this.currentGoal || this.currentGoal.id !== 'ai_project_build') return;
+                    const defaults = [
+                        { id: 'memory_system', priority: 0.8 },
+                        { id: 'ui_stability', priority: 0.6 },
+                    ];
+                    defaults.forEach(goal => {
+                        if (!this.subGoals.some(item => item.id === goal.id)) this.subGoals.push(goal);
+                    });
+                }
+
+                goalRelevance(memory, goal = this.currentGoal) {
+                    if (!goal) return 1;
+                    const memoryText = memoryRouterText(memory).toLowerCase();
+                    const goalText = memoryRouterText(goal).toLowerCase();
+                    if (!memoryText || !goalText) return 0.2;
+                    const goalTokens = Array.from(new Set(goalText.split(/\s+/).filter(token => token.length > 1)));
+                    const matched = goalTokens.filter(token => memoryText.includes(token)).length;
+                    if (memory.relatedGoalId && memory.relatedGoalId === goal.id) return 1;
+                    if (matched >= Math.max(1, Math.ceil(goalTokens.length * 0.5))) return 1;
+                    if (/(AI|ai|记忆|memory|系统|项目|助手)/.test(memoryText) && /(AI|ai|记忆|memory|系统|项目|助手)/.test(goalText)) return 0.6;
+                    return 0.2;
+                }
+            }
+
+            class MemoryAttentionEngine {
+                score(memory = {}, context = {}) {
+                    const relevance = this.estimateRelevance(memory, context);
+                    const recency = this.estimateRecency(memory, context);
+                    const frequency = this.estimateFrequency(memory);
+                    const utility = this.estimateUtility(memory);
+                    const decay = this.estimateDecay(memory, context);
+                    const contradictionPenalty = this.contradictsCurrentState(memory, context) ? 0.3 : 0;
+                    const weighted = 0.35 * relevance + 0.25 * recency + 0.25 * frequency + 0.15 * utility;
+                    const memoryAttentionScore = Math.max(0, Math.min(1, weighted - decay - contradictionPenalty));
+                    const goalRelevanceScore = context.goal
+                        ? new GoalKernel({ currentGoal: context.goal }).goalRelevance(memory, context.goal)
+                        : 1;
+                    const finalScore = Math.max(0, Math.min(1, memoryAttentionScore * goalRelevanceScore));
+                    return {
+                        relevance,
+                        recency,
+                        frequency,
+                        utility,
+                        memoryAttentionScore,
+                        goalRelevanceScore,
+                        finalScore,
+                        decay,
+                        contradictionPenalty,
+                        visible: finalScore >= 0.2,
+                    };
+                }
+
+                filterVisible(memories = [], context = {}) {
+                    return (Array.isArray(memories) ? memories : [])
+                        .map(memory => ({ memory, attentionScore: this.score(memory, context) }))
+                        .filter(item => item.attentionScore.visible)
+                        .sort((a, b) => b.attentionScore.finalScore - a.attentionScore.finalScore)
+                        .map(item => ({ ...item.memory, attentionScore: item.attentionScore }));
+                }
+
+                estimateRelevance(memory, context = {}) {
+                    if (Number.isFinite(Number(memory.relevance))) return this.clamp(memory.relevance);
+                    const query = memoryRouterText(context.currentState || context.currentText || context.query || '');
+                    const text = memoryRouterText(memory);
+                    if (!query || !text) return 0.5;
+                    const tokens = Array.from(new Set(query.toLowerCase().split(/\s+/).filter(token => token.length > 1)));
+                    if (tokens.length === 0) return 0.5;
+                    const lowered = text.toLowerCase();
+                    return this.clamp(tokens.filter(token => lowered.includes(token)).length / tokens.length);
+                }
+
+                estimateRecency(memory, context = {}) {
+                    if (Number.isFinite(Number(memory.recency))) return this.clamp(memory.recency);
+                    const now = Number(context.timestamp || Date.now());
+                    const ts = Number(memory.lastUsedAt || memory.updated_at || memory.updatedAt ||
+                        memory.timestamp || memory.createdAt || memory.created_at || now);
+                    const days = Math.max(0, (now - ts) / (24 * 60 * 60 * 1000));
+                    return this.clamp(1 - days * 0.03);
+                }
+
+                estimateFrequency(memory) {
+                    if (Number.isFinite(Number(memory.frequency))) return this.clamp(memory.frequency);
+                    const count = Number(memory.observed_count || memory.usageCount || memory.count || 1);
+                    return this.clamp(count / 5);
+                }
+
+                estimateUtility(memory) {
+                    if (Number.isFinite(Number(memory.utility))) return this.clamp(memory.utility);
+                    const text = memoryRouterText(memory);
+                    if (/当前|计划|任务|项目|目标|偏好|喜欢|系统|AI/i.test(text)) return 0.8;
+                    return 0.5;
+                }
+
+                estimateDecay(memory, context = {}) {
+                    const now = Number(context.timestamp || Date.now());
+                    const ts = Number(memory.lastUsedAt || memory.updated_at || memory.updatedAt ||
+                        memory.timestamp || memory.createdAt || memory.created_at || now);
+                    const days = Math.max(0, (now - ts) / (24 * 60 * 60 * 1000));
+                    return Math.max(0, days * 0.01);
+                }
+
+                contradictsCurrentState(memory, context = {}) {
+                    if (memory.contradicts_current_state === true || memory.contradictsCurrentState === true) return true;
+                    const current = memoryRouterText(context.currentState || context.currentText || '');
+                    const text = memoryRouterText(memory);
+                    if (!current || !text) return false;
+                    const pressureNow = /焦虑|高压|熬夜|紧急|冲刺|deadline/i.test(current);
+                    const stableMemory = /稳定|规律|平静|理性/i.test(text);
+                    return pressureNow && stableMemory;
+                }
+
+                clamp(value) {
+                    return Math.max(0, Math.min(1, Number(value) || 0));
+                }
+            }
+
+            class MemoryCompressionEngine {
+                compress(memories = []) {
+                    const list = Array.isArray(memories) ? memories.filter(Boolean) : [];
+                    if (!this.shouldCompress(list)) return list;
+                    return [{
+                        summary: this.buildSummary(list),
+                        compressedFrom: list.length,
+                        type: 'compressed_memory_summary',
+                    }];
+                }
+
+                shouldCompress(memories = []) {
+                    if (memories.length > 5) return true;
+                    for (let i = 0; i < memories.length; i++) {
+                        for (let j = i + 1; j < memories.length; j++) {
+                            if (this.similarity(memories[i], memories[j]) > 0.7) return true;
+                        }
+                    }
+                    return false;
+                }
+
+                buildSummary(memories = []) {
+                    const text = memories.map(memory => memoryRouterText(memory)).join('；');
+                    const aiProject = /AI|系统|项目|代码|工程|开发|记忆/i.test(text);
+                    const design = /设计|结构|架构|系统/i.test(text);
+                    if (aiProject && design) return '以AI系统构建为核心兴趣，持续进行工程型项目开发';
+                    return text.replace(/\s+/g, ' ').slice(0, 180);
+                }
+
+                similarity(a, b) {
+                    const left = new Set(memoryRouterText(a).toLowerCase().split(/\s+/).filter(Boolean));
+                    const right = new Set(memoryRouterText(b).toLowerCase().split(/\s+/).filter(Boolean));
+                    if (left.size === 0 || right.size === 0) return 0;
+                    const overlap = Array.from(left).filter(token => right.has(token)).length;
+                    return overlap / Math.min(left.size, right.size);
+                }
+            }
+
+            class MemorySynthesisEngine {
+                synthesize(memories = {}) {
+                    const goalKernel = new GoalKernel(memories.goal || {});
+                    const goalState = memories.goal && memories.goal.currentGoal
+                        ? goalKernel.getState()
+                        : goalKernel.infer({ recentMessages: memories.recentMessages || [] });
+                    const normalized = {
+                        long_term: memories.long_term || {},
+                        volatile: memories.volatile || {},
+                        profile: memories.profile || {},
+                        topic: memories.topic || {},
+                        goal: goalState,
+                    };
+                    const visible = this.prepareVisibleMemories(normalized);
+                    const now = this.buildCurrentState(visible.volatile, visible.topic);
+                    const core = this.buildCoreSelf(visible.long_term, visible.profile);
+                    const modifier = this.resolveConflicts(now, core);
+                    return { goal: goalState, now, core, modifier, memoryFacts: visible.memoryFacts, attention: visible.attention };
+                }
+
+                prepareVisibleMemories(memories = {}) {
+                    const attention = new MemoryAttentionEngine();
+                    const compression = new MemoryCompressionEngine();
+                    const currentState = memoryRouterText({
+                        volatile: memories.volatile,
+                        topic: memories.topic,
+                    });
+                    const context = { currentState, timestamp: Date.now(), goal: memories.goal && memories.goal.currentGoal };
+                    const visibleFacts = attention.filterVisible(memories.long_term.facts || [], context);
+                    const visiblePreferences = attention.filterVisible(memories.long_term.preferences || [], context);
+                    const visiblePlans = attention.filterVisible(memories.volatile.plans || [], context);
+                    const visibleEvents = attention.filterVisible(memories.volatile.temporaryEvents || [], context);
+                    const visibleTopics = attention.filterVisible(memories.topic.topics || [], context);
+                    const profileSections = {};
+                    Object.entries(memories.profile.sections || {}).forEach(([key, items]) => {
+                        profileSections[key] = attention.filterVisible(items || [], context);
+                    });
+
+                    const compressedFacts = compression.compress(visibleFacts);
+                    const compressedTraits = compression.compress(Object.values(profileSections).flat());
+                    return {
+                        long_term: {
+                            ...memories.long_term,
+                            facts: compressedFacts,
+                            preferences: compression.compress(visiblePreferences),
+                        },
+                        volatile: {
+                            ...memories.volatile,
+                            plans: visiblePlans,
+                            temporaryEvents: visibleEvents,
+                        },
+                        profile: {
+                            ...memories.profile,
+                            sections: compressedTraits.length === 1 && compressedTraits[0].summary
+                                ? { synthesized: compressedTraits }
+                                : profileSections,
+                        },
+                        topic: {
+                            ...memories.topic,
+                            topics: visibleTopics,
+                        },
+                        memoryFacts: compressedFacts,
+                        attention: {
+                            hidden: this.countMemories(memories) -
+                                this.countMemories({
+                                    long_term: { facts: visibleFacts, preferences: visiblePreferences },
+                                    volatile: { plans: visiblePlans, temporaryEvents: visibleEvents },
+                                    profile: { sections: profileSections },
+                                    topic: { topics: visibleTopics },
+                                }),
+                        },
+                    };
+                }
+
+                countMemories(memories = {}) {
+                    const profileCount = Object.values((memories.profile && memories.profile.sections) || {})
+                        .reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+                    return ((memories.long_term && memories.long_term.facts || []).length) +
+                        ((memories.long_term && memories.long_term.preferences || []).length) +
+                        ((memories.volatile && memories.volatile.plans || []).length) +
+                        ((memories.volatile && memories.volatile.temporaryEvents || []).length) +
+                        ((memories.topic && memories.topic.topics || []).length) +
+                        profileCount;
+                }
+
+                buildCurrentState(volatile = {}, topic = {}) {
+                    const plans = Array.isArray(volatile.plans) ? volatile.plans : [];
+                    const events = Array.isArray(volatile.temporaryEvents) ? volatile.temporaryEvents : [];
+                    const topics = Array.isArray(topic.topics) ? topic.topics : [];
+                    const activeTasks = [];
+                    plans.slice(-5).forEach(plan => {
+                        const content = plan && (plan.content || plan.detail || plan.description);
+                        if (content) activeTasks.push(String(content));
+                    });
+                    topics.slice(-3).forEach(item => {
+                        const title = item && (item.title || item.summary || item.content);
+                        if (title) activeTasks.push(String(title));
+                    });
+                    const combined = [plans, events, topics].flat().map(item => memoryRouterText(item)).join(' ');
+                    const focus = activeTasks[0] || this.extractTopicFocus(topics) || '暂无明确焦点';
+                    const mood = this.estimateNowMood(combined);
+                    return {
+                        focus,
+                        mood,
+                        activeTasks: Array.from(new Set(activeTasks)).slice(0, 6),
+                    };
+                }
+
+                buildCoreSelf(longTerm = {}, profile = {}) {
+                    const traits = [];
+                    const preferences = [];
+                    const pushUnique = (list, value) => {
+                        const text = String(value || '').replace(/\s+/g, ' ').trim();
+                        if (text && !list.includes(text)) list.push(text);
+                    };
+
+                    (longTerm.preferences || []).slice(-8).forEach(item =>
+                        pushUnique(preferences, item.detail || item.content || item.description)
+                    );
+                    (longTerm.facts || []).slice(-8).forEach(item =>
+                        pushUnique(traits, item.content || item.detail || item.description)
+                    );
+                    Object.values(profile.sections || {}).forEach(items => {
+                        (Array.isArray(items) ? items : []).slice(-4).forEach(item =>
+                            pushUnique(traits, item.text || item.content || item.summary)
+                        );
+                    });
+                    Object.values(profile.manual_basic || {}).forEach(value => pushUnique(traits, value));
+
+                    return {
+                        traits: traits.slice(0, 10),
+                        preferences: preferences.slice(0, 10),
+                    };
+                }
+
+                resolveConflicts(now = {}, core = {}) {
+                    const overrides = [];
+                    const nowText = memoryRouterText(now);
+                    const coreText = memoryRouterText(core);
+                    const pressureNow = /焦虑|高压|熬夜|赶|截止|deadline|推进|冲刺|紧急/i.test(nowText);
+                    const stableCore = /理性|稳定|规律|平静|长期|偏好/i.test(coreText);
+
+                    if (pressureNow) {
+                        overrides.push('当前行为优先于长期人格：高压推进期（覆盖稳定性偏好）');
+                    }
+                    if ((now.activeTasks || []).length > 0 && (core.preferences || []).length > 0) {
+                        overrides.push('当前优先处理短期目标，忽略低优先级长期偏好');
+                    }
+                    if (overrides.length === 0) {
+                        overrides.push('无明显冲突，按稳定人格和当前任务共同响应');
+                    }
+                    return { overrides };
+                }
+
+                extractTopicFocus(topics = []) {
+                    const latest = topics[topics.length - 1];
+                    return latest && (latest.title || latest.summary || latest.content) || '';
+                }
+
+                estimateNowMood(text) {
+                    const source = String(text || '');
+                    if (/焦虑|高压|熬夜|截止|deadline|紧急|冲刺/i.test(source)) {
+                        return '高压推进期（覆盖稳定性偏好）';
+                    }
+                    if (/推进|重构|修复|实现|项目/i.test(source)) {
+                        return '推进状态';
+                    }
+                    return '稳定';
+                }
+            }
+
+            if (typeof window !== 'undefined') {
+                window.classifyMemory = classifyMemory;
+                window.scoreMemory = scoreMemory;
+                window.routeMemory = routeMemory;
+                window.memoryRouter = memoryRouter;
+                window.confidenceScore = confidenceScore;
+                window.MemoryPromotionEngine = MemoryPromotionEngine;
+                window.GoalKernel = GoalKernel;
+                window.MemoryAttentionEngine = MemoryAttentionEngine;
+                window.MemoryCompressionEngine = MemoryCompressionEngine;
+                window.MemorySynthesisEngine = MemorySynthesisEngine;
+            }
+
             function installMemoryStorageGuard() {
                 const prototype = typeof Storage !== 'undefined'
                     ? Storage.prototype
@@ -2686,18 +3298,379 @@
                     };
                 }
 
-                /** 兼容旧调用：只解析 MEMORY_UPDATE，不写入 memory */
-                parseMemoryUpdate(content) {
-                    return extractMemoryUpdatePayload(content);
+                _routeMemoryUpdate(input, options = {}) {
+                    const route = this._buildMemoryUpdateRoute(input, options);
+                    this.lastMemoryUpdateRoute = route;
+                    if (!route.data) return route.shouldApply ? false : route;
+                    if (!route.shouldApply) return route;
+                    return this._applyMemoryData(route.data, route.source, route.context);
                 }
 
-                _applyMemoryData(memData, source = 'API') {
-                    if (!memData) return false;
-                    return this._withMemoryWriteAccess(
+                _buildMemoryUpdateRoute(input, options = {}) {
+                    const shouldParse = options.parse === true;
+                    const shouldApply = options.apply === true;
+                    const source = options.source || 'API';
+                    const parsed = shouldParse ? extractMemoryUpdatePayload(input) : input;
+                    const data = this._normalizeMemoryUpdatePayload(parsed);
+                    const context = this._buildMemoryRouterContext(options.context);
+                    const update = {
+                        type: 'memory_update',
+                        data: data || {},
+                        context,
+                    };
+                    const result = memoryRouter(update, context);
+                    return {
+                        ...result,
                         source,
-                        () => this._applyMemoryDataAuthorized(memData),
+                        shouldApply,
+                        data,
+                        update,
+                        context,
+                    };
+                }
+
+                _normalizeMemoryUpdatePayload(payload) {
+                    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+                    if (classifyMemory(payload) !== 'unknown' || this._hasExecutableMemoryInstruction(payload)) return payload;
+                    const wrapperKeys = ['memoryUpdate', 'memory_update', 'memoryData'];
+                    for (const key of wrapperKeys) {
+                        if (payload[key] && typeof payload[key] === 'object' && !Array.isArray(payload[key])) {
+                            return payload[key];
+                        }
+                    }
+                    return payload;
+                }
+
+                _hasExecutableMemoryInstruction(data) {
+                    if (!data || typeof data !== 'object') return false;
+                    return [
+                        'clearAll', 'maintenance', 'expense', 'preference', 'preferences',
+                        'aiLearning', 'facts', 'longTerm', 'plans', 'temporaryEvent',
+                        'tempEvent', 'event', 'volatile',
+                        'updateSelectedMemory', 'updateMemory', 'removeBasicInfo', 'removePreference',
+                        'removeFact', 'removeAiLearning', 'removeExpense', 'removeLongTerm',
+                        'removeVolatile', 'removePlan', 'removeTemporaryEvent', 'removeMemory',
+                        'userNegation',
+                    ].some(key => Object.prototype.hasOwnProperty.call(data, key));
+                }
+
+                _buildMemoryRouterContext(context = {}) {
+                    const recentMessages = Array.isArray(context.recentMessages)
+                        ? context.recentMessages
+                        : (typeof conversationHistory !== 'undefined' && Array.isArray(conversationHistory)
+                            ? conversationHistory.slice(-12)
+                            : []);
+                    return {
+                        ...context,
+                        recentMessages,
+                        currentTopic: context.currentTopic || '',
+                        timestamp: context.timestamp || Date.now(),
+                    };
+                }
+
+                _applyProfileMemoryData(data, route) {
+                    const observations = this._profileObservationsFromMemoryData(data);
+                    if (observations.length === 0) return false;
+                    const recentMessages = route && route.context && Array.isArray(route.context.recentMessages)
+                        ? route.context.recentMessages
+                        : [];
+                    const lastMessage = recentMessages.length ? recentMessages[recentMessages.length - 1] : null;
+                    const messageId = lastMessage && lastMessage.id ? lastMessage.id : null;
+                    const timestamp = route && route.context ? route.context.timestamp : Date.now();
+
+                    observations.forEach(text => {
+                        if (route && route.promotion && route.promotion.rule === 'profile_candidate_to_profile_confirmed' &&
+                            typeof mergeUserProfileItem === 'function') {
+                            mergeUserProfileItem('background_information', text, messageId, timestamp);
+                        } else if (typeof mergeUserProfileObservation === 'function') {
+                            mergeUserProfileObservation('background_information', text, messageId, timestamp);
+                        } else if (typeof memoryUserProfile !== 'undefined') {
+                            const list = Array.isArray(memoryUserProfile.observed_candidates)
+                                ? memoryUserProfile.observed_candidates
+                                : (memoryUserProfile.observed_candidates = []);
+                            list.push({
+                                id: 'profile_observed_router_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+                                section: 'background_information',
+                                text,
+                                created_at: timestamp,
+                                updated_at: timestamp,
+                                observed_count: 1,
+                                source_message_ids: messageId ? [messageId] : [],
+                            });
+                        }
+                    });
+                    if (typeof memoryUserProfile !== 'undefined') {
+                        memoryUserProfile.updated_at = Date.now();
+                    }
+                    if (typeof saveUserProfile === 'function') saveUserProfile();
+                    if (typeof updateMemoryPanel === 'function') updateMemoryPanel();
+                    return true;
+                }
+
+                _profileObservationsFromMemoryData(data) {
+                    const observations = [];
+                    const pushObservation = (label, value) => {
+                        if (value === undefined || value === null || value === '') return;
+                        const text = typeof value === 'object'
+                            ? `${label}: ${JSON.stringify(value)}`
+                            : `${label}: ${value}`;
+                        observations.push(text.slice(0, 240));
+                    };
+                    if (data.basicInfo && typeof data.basicInfo === 'object') {
+                        Object.entries(data.basicInfo).forEach(([key, value]) => pushObservation(`basicInfo.${key}`, value));
+                    }
+                    if (data.identity) {
+                        if (typeof data.identity === 'object' && !Array.isArray(data.identity)) {
+                            Object.entries(data.identity).forEach(([key, value]) => pushObservation(`identity.${key}`, value));
+                        } else {
+                            pushObservation('identity', data.identity);
+                        }
+                    }
+                    if (data.topic) pushObservation('topic', data.topic);
+                    if (data.conversation) pushObservation('conversation', data.conversation);
+                    if (data.profileCandidate) pushObservation('profileCandidate', data.profileCandidate);
+                    if (data.profile_candidate) pushObservation('profile_candidate', data.profile_candidate);
+                    return observations;
+                }
+
+                _promotionMemoryFromData(data, decision) {
+                    if (!data || typeof data !== 'object') return { type: 'unknown', data };
+                    if (data.type) return { ...data, data };
+                    if (data.plan) return { type: 'plan', data: data.plan, content: memoryRouterText(data.plan) };
+                    if (data.plans) return { type: 'plan', data: data.plans, content: memoryRouterText(data.plans) };
+                    if (data.topic) return { type: 'topic', data: data.topic, content: memoryRouterText(data.topic) };
+                    if (data.conversation) return { type: 'topic', data: data.conversation, content: memoryRouterText(data.conversation) };
+                    if (data.profileCandidate || data.profile_candidate) {
+                        const candidate = data.profileCandidate || data.profile_candidate;
+                        return { type: 'profile_candidate', data: candidate, content: memoryRouterText(candidate) };
+                    }
+                    return { type: decision && decision.type ? decision.type : 'unknown', data, content: memoryRouterText(data) };
+                }
+
+                _buildPromotionHistoryContext(context = {}) {
+                    return {
+                        ...context,
+                        repeatedAcrossSessions: context.repeatedAcrossSessions || 0,
+                        confidenceScore: context.confidenceScore || 0,
+                        repetition: context.repetition || 0,
+                    };
+                }
+
+                saveLongTerm(data, route) {
+                    return this._withMemoryWriteAccess(
+                        route && route.source ? route.source : 'API',
+                        () => this._applyMemoryDataAuthorized(data),
                         MEMORY_WRITE_TOKEN
                     );
+                }
+
+                _promotedPlanAsLongTermFact(data) {
+                    const source = data && (data.plan || data.plans || data);
+                    const content = memoryRouterText(source).replace(/\s+/g, ' ').trim();
+                    return {
+                        fact: {
+                            category: '长期计划',
+                            content: content || '反复出现的临时计划',
+                        },
+                    };
+                }
+
+                _memoryIdForMigration(data) {
+                    const source = data && (data.plan || data.topic || data.profileCandidate || data.profile_candidate || data);
+                    if (source && typeof source === 'object') {
+                        return source.id || source.memoryId || source.content || source.detail || source.text ||
+                            memoryRouterText(source).replace(/\s+/g, ' ').trim();
+                    }
+                    return memoryRouterText(source).replace(/\s+/g, ' ').trim();
+                }
+
+                migrateMemory(from, to, memoryId, memoryData = {}, route = {}) {
+                    return this._withMemoryWriteAccess(
+                        route && route.source ? route.source : 'API/promotion',
+                        () => {
+                            const removed = this.remove(from, memoryId);
+                            const added = this.add(to, memoryId, memoryData, removed);
+                            return {
+                                from,
+                                to,
+                                memoryId,
+                                removed,
+                                added,
+                            };
+                        },
+                        MEMORY_WRITE_TOKEN
+                    );
+                }
+
+                remove(from, memoryId) {
+                    if (from === 'mem_volatile') {
+                        const planIndex = this.volatile.plans.findIndex(plan => this._matchesMemoryTarget(plan, memoryId));
+                        if (planIndex >= 0) {
+                            const removed = this.volatile.plans.splice(planIndex, 1)[0];
+                            this._saveAll();
+                            return removed;
+                        }
+                        const eventIndex = this.volatile.temporaryEvents.findIndex(event => this._matchesMemoryTarget(event, memoryId));
+                        if (eventIndex >= 0) {
+                            const removed = this.volatile.temporaryEvents.splice(eventIndex, 1)[0];
+                            this._saveAll();
+                            return removed;
+                        }
+                    }
+                    if (from === 'mem_long_term') {
+                        const factIndex = (this.longTerm.facts || []).findIndex(fact => this._matchesMemoryTarget(fact, memoryId));
+                        if (factIndex >= 0) {
+                            const removed = this.longTerm.facts.splice(factIndex, 1)[0];
+                            this._saveAll();
+                            return removed;
+                        }
+                    }
+                    return null;
+                }
+
+                add(to, memoryId, memoryData = {}, removed = null) {
+                    if (to === 'mem_long_term') {
+                        const payload = memoryData.longTermPayload || memoryData;
+                        if (payload && typeof payload === 'object' && Object.keys(payload).length > 0) {
+                            this._applyMemoryDataAuthorized(payload);
+                            return payload;
+                        }
+                        const content = memoryRouterText(removed || memoryId).replace(/\s+/g, ' ').trim();
+                        if (content) {
+                            this.addLongTermFact('通用', content);
+                            return { fact: { category: '通用', content } };
+                        }
+                    }
+                    if (to === 'mem_volatile' && memoryData && typeof memoryData === 'object') {
+                        this._applyMemoryDataAuthorized(memoryData);
+                        return memoryData;
+                    }
+                    if (to === 'memory_user_profile') {
+                        this._applyProfileMemoryData(memoryData, { promotion: { target: to } });
+                        return memoryData;
+                    }
+                    return null;
+                }
+
+                _migrateVolatilePlanToLongTerm(data, route) {
+                    const memoryId = this._memoryIdForMigration(data);
+                    const migration = this.migrateMemory(
+                        'mem_volatile',
+                        'mem_long_term',
+                        memoryId,
+                        { longTermPayload: this._promotedPlanAsLongTermFact(data) },
+                        route
+                    );
+                    if (route) {
+                        route.migration = migration;
+                        route.memoryId = memoryId;
+                    }
+                    return migration;
+                }
+
+                saveVolatile(data, route) {
+                    return this._withMemoryWriteAccess(
+                        route && route.source ? route.source : 'API',
+                        () => this._applyMemoryDataAuthorized(data),
+                        MEMORY_WRITE_TOKEN
+                    );
+                }
+
+                saveProfile(data, route) {
+                    const applied = this._applyProfileMemoryData(data, route);
+                    if (route) route.applied = applied;
+                    return route || applied;
+                }
+
+                saveTopic(data, route) {
+                    if (route) route.applied = false;
+                    return route || false;
+                }
+
+                _applyMemoryPromotion(data, decision, route) {
+                    const promotionScore = {
+                        ...decision.score,
+                        ...((route.context && (route.context.score || route.context.promotionScore)) || {}),
+                    };
+                    const promotionEngine = new MemoryPromotionEngine();
+                    const promotion = promotionEngine.evaluate({
+                        memory: this._promotionMemoryFromData(data, decision),
+                        type: decision.type,
+                        score: promotionScore,
+                        historyContext: this._buildPromotionHistoryContext(route.context),
+                    });
+                    route.promotion = promotion;
+                    if (!promotion.promoted) return false;
+
+                    route.promotedFrom = decision.target;
+                    route.promotedTo = promotion.target === 'profile_candidate'
+                        ? 'memory_user_profile'
+                        : promotion.target;
+
+                    switch (promotion.target) {
+                        case 'mem_long_term':
+                            return this._migrateVolatilePlanToLongTerm(data, route);
+                        case 'profile_candidate':
+                            return this.saveProfile(data, route);
+                        case 'memory_user_profile':
+                            return this.saveProfile(data, route);
+                        default:
+                            recordMemoryError('memory_promotion_unknown_target', promotion.target, JSON.stringify(route.update).slice(0, 500));
+                            return false;
+                    }
+                }
+
+                /** 兼容旧调用：只解析 MEMORY_UPDATE，不写入 memory */
+                parseMemoryUpdate(content) {
+                    return this._routeMemoryUpdate(content, {
+                        parse: true,
+                        apply: false,
+                        source: 'parseMemoryUpdate',
+                    });
+                }
+
+                _applyMemoryData(memData, source = 'API', contextOverride = {}) {
+                    const data = this._normalizeMemoryUpdatePayload(memData);
+                    const context = this._buildMemoryRouterContext(contextOverride);
+                    const update = {
+                        type: 'memory_update',
+                        data: data || {},
+                        context,
+                    };
+                    const decision = memoryRouter(update, context);
+                    const route = {
+                        ...decision,
+                        promotion: null,
+                        source,
+                        shouldApply: true,
+                        data,
+                        update,
+                        context,
+                    };
+                    this.lastMemoryUpdateRoute = route;
+                    if (!data) return false;
+                    let applied;
+                    switch (decision.target) {
+                        case 'mem_long_term':
+                            applied = this.saveLongTerm(data, route);
+                            break;
+                        case 'mem_volatile':
+                            applied = this.saveVolatile(data, route);
+                            break;
+                        case 'memory_user_profile':
+                            applied = this.saveProfile(data, route);
+                            break;
+                        case 'mem_topic_memory':
+                            applied = this.saveTopic(data, route);
+                            break;
+                        default:
+                            recordMemoryError('memory_router_unknown_target', decision.target, JSON.stringify(update).slice(0, 500));
+                            applied = this.saveLongTerm(data, { ...route, target: 'mem_long_term', context });
+                            break;
+                    }
+                    route.applied = applied;
+                    this._applyMemoryPromotion(data, decision, route);
+                    return applied;
                 }
 
                 _applyMemoryDataAuthorized(memData) {
@@ -3007,6 +3980,56 @@
                 });
 
                 return indexedSummary.length ? indexedSummary.join('\n') : '';
+            }
+
+            function buildMemorySynthesis() {
+                const topicState = topicMemoryManager ? topicMemoryManager.getState() : {};
+                const engine = new MemorySynthesisEngine();
+                return engine.synthesize({
+                    long_term: memorySystem ? memorySystem.longTerm : {},
+                    volatile: memorySystem ? memorySystem.volatile : {},
+                    profile: memoryUserProfile || {},
+                    topic: topicState || {},
+                    recentMessages: Array.isArray(conversationHistory) ? conversationHistory.slice(-24) : [],
+                });
+            }
+
+            function formatMemorySynthesisPrompt(synthesis) {
+                const goal = synthesis && synthesis.goal ? synthesis.goal : {};
+                const now = synthesis && synthesis.now ? synthesis.now : {};
+                const core = synthesis && synthesis.core ? synthesis.core : {};
+                const modifier = synthesis && synthesis.modifier ? synthesis.modifier : {};
+                const facts = synthesis && Array.isArray(synthesis.memoryFacts) ? synthesis.memoryFacts : [];
+                const lineList = (items, fallback) => {
+                    const list = (Array.isArray(items) ? items : []).filter(Boolean);
+                    return list.length ? list.map(item => '- ' + item).join('\n') : '- ' + fallback;
+                };
+
+                return [
+                    '[CURRENT GOAL]',
+                    '- 当前目标：' + (goal.currentGoal ? goal.currentGoal.description : '暂无明确目标'),
+                    '- 目标优先级：' + (goal.currentGoal ? goal.currentGoal.priority : 'n/a'),
+                    '- 子目标：',
+                    lineList((goal.subGoals || []).map(item => `${item.id} (${item.priority})`), '暂无子目标'),
+                    '',
+                    '[CURRENT STATE]',
+                    '- 当前焦点：' + (now.focus || '暂无明确焦点'),
+                    '- 当前情绪/阶段：' + (now.mood || '稳定'),
+                    '- 当前任务：',
+                    lineList(now.activeTasks, '暂无活跃任务'),
+                    '',
+                    '[CORE IDENTITY]',
+                    '- 稳定人格：',
+                    lineList(core.traits, '暂无稳定人格结论'),
+                    '- 稳定偏好：',
+                    lineList(core.preferences, '暂无稳定偏好'),
+                    '',
+                    '[ACTIVE OVERRIDES]',
+                    lineList(modifier.overrides, '无覆盖规则'),
+                    '',
+                    '[MEMORY FACTS]',
+                    lineList(facts.map(item => item.summary || `[${item.category || '通用'}]${item.content}`), '暂无长期事实'),
+                ].join('\n');
             }
 
             // ==================== 可视化诊断状态 ====================
@@ -4433,9 +5456,10 @@
 
             // ==================== 构建系统提示 ====================
             function buildSystemPrompt() {
-                const memorySummary = memorySystem.getMemorySummary();
                 const userProfileSummary = getUserProfileSummary();
                 const topicMemorySummary = getTopicMemorySummary();
+                const memorySynthesis = buildMemorySynthesis();
+                const memorySynthesisPrompt = formatMemorySynthesisPrompt(memorySynthesis);
                 const beijingTemporalContext = getBeijingTemporalContext();
                 
                 const systemPromptParts = [
@@ -4453,10 +5477,10 @@
                     "✅ 规则5：这个标记是 HTML 注释，用户看不到，只有系统能看到",
                     "✅ 规则6：每条消息都要有记忆标记，这是强制的，不是可选的！",
                     "",
-                    "## 已存储的记忆",
-                    memorySummary,
-                    userProfileSummary ? "\n## 长期累积用户画像\n" + userProfileSummary : "",
-                    topicMemorySummary ? "\n## 近期话题\n" + topicMemorySummary : "",
+                    "## Synthesis Layer（分层记忆状态）",
+                    memorySynthesisPrompt,
+                    userProfileSummary ? "\n## 画像原始摘要（仅用于核对）\n" + userProfileSummary : "",
+                    topicMemorySummary ? "\n## 近期话题原始摘要（仅用于核对）\n" + topicMemorySummary : "",
                     "",
                     "## 当前界面选择",
                     selectedMemoryContextText(),
