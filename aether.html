@@ -4954,7 +4954,6 @@
                 if (memUserProfile) {
                     const profileCount = Object.keys(USER_PROFILE_SECTIONS).reduce((count, key) =>
                         count + (memoryUserProfile.sections[key] || []).length, 0);
-                    const manualEntries = getManualBasicProfileEntries();
                     const observedCandidates = getObservedProfileCandidates();
                     let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条' +
                         (observedCandidates.length ? ' · 候选' + observedCandidates.length : '') + '）' +
@@ -4980,7 +4979,7 @@
                     if (errorLog.length) {
                         profileHTML += '<div class="empty-hint">最近整理失败：' + escapeHTML(errorLog[0].type) + ' · ' + escapeHTML(errorLog[0].message) + '</div>';
                     }
-                    if (!profileCount && !manualEntries.length && !observedCandidates.length && !isUserProfileEditorOpen) {
+                    if (!profileCount && !observedCandidates.length && !isUserProfileEditorOpen) {
                         profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
                     }
                     memUserProfile.innerHTML = profileHTML;
