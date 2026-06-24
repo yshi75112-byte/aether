@@ -4964,10 +4964,6 @@
                     if (isUserProfileEditorOpen) {
                         profileHTML += renderManualBasicProfileEditor();
                     }
-                    manualEntries.forEach(item => {
-                        profileHTML += '<div class="mem-item">' + escapeHTML(item.value) +
-                            '<div class="mem-meta">手动基础画像 · ' + escapeHTML(item.label) + '</div></div>';
-                    });
                     observedCandidates.forEach(candidate => {
                         profileHTML += observedProfileCandidateHTML(candidate);
                     });
