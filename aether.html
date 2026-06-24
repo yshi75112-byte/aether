@@ -205,6 +205,82 @@
             gap: 6px;
             letter-spacing: 0.03em;
         }
+        .memory-title-spacer {
+            flex: 1;
+        }
+        .profile-ghost-toggle {
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.68rem;
+            cursor: pointer;
+            padding: 2px 0;
+            opacity: 0.45;
+            transition: opacity 0.15s ease, color 0.15s ease;
+        }
+        .memory-section:hover .profile-ghost-toggle,
+        .profile-ghost-toggle:focus-visible {
+            opacity: 1;
+            color: var(--accent-soft);
+            outline: none;
+        }
+        .profile-basic-editor {
+            display: grid;
+            gap: 7px;
+            margin: 8px 0 4px;
+            padding: 9px;
+            border-radius: 8px;
+            background: #fbfaf6;
+            border: 1px solid #eee8dc;
+        }
+        .profile-basic-editor label {
+            display: grid;
+            gap: 3px;
+            color: var(--text-muted);
+            font-size: 0.64rem;
+        }
+        .profile-basic-editor input,
+        .profile-basic-editor select,
+        .profile-basic-editor textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--white);
+            color: var(--text-secondary);
+            font-family: inherit;
+            font-size: 0.72rem;
+            padding: 6px 7px;
+            outline: none;
+        }
+        .profile-basic-editor textarea {
+            min-height: 52px;
+            resize: vertical;
+        }
+        .profile-basic-editor input:focus,
+        .profile-basic-editor select:focus,
+        .profile-basic-editor textarea:focus {
+            border-color: #cfc6b8;
+            box-shadow: 0 0 0 2px rgba(207, 198, 184, 0.18);
+        }
+        .profile-basic-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+        .profile-basic-actions button {
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            background: var(--white);
+            color: var(--text-secondary);
+            font-size: 0.68rem;
+            padding: 5px 9px;
+            cursor: pointer;
+        }
+        .profile-basic-actions button.primary {
+            background: var(--accent-soft);
+            color: var(--white);
+            border-color: var(--accent-soft);
+        }
         .memory-section h4 .dot {
             width: 7px;
             height: 7px;
@@ -1374,6 +1450,7 @@
             const BEIJING_TIME_ZONE = 'Asia/Shanghai';
             let autoSaveTimer = null; // 自动保存定时器
             let selectedMemory = null;
+            let isUserProfileEditorOpen = false;
             const debugState = {
                 lastRenderAt: null,
                 lastMemoryPanelRenderAt: null,
@@ -1663,16 +1740,53 @@
                 ai_project_status: '当前AI助手项目状态',
                 background_information: '不希望重复解释的背景',
             };
+            const MANUAL_BASIC_PROFILE_FIELDS = {
+                display_name: '称呼',
+                timezone: '时区/常用时间',
+                technical_background: '技术背景',
+                current_project: '当前主要项目',
+                current_goal: '当前目标',
+                stable_background: '不希望重复解释的背景',
+            };
 
             function emptyUserProfile() {
                 return {
                     version: 1,
                     updated_at: null,
+                    manual_basic: Object.keys(MANUAL_BASIC_PROFILE_FIELDS).reduce((result, key) => {
+                        result[key] = '';
+                        return result;
+                    }, {}),
                     sections: Object.keys(USER_PROFILE_SECTIONS).reduce((result, key) => {
                         result[key] = [];
                         return result;
                     }, {}),
+                    uncategorized_candidates: [],
                 };
+            }
+
+            function normalizeUserProfile(profile, fallback = emptyUserProfile()) {
+                const normalized = profile && typeof profile === 'object' ? profile : fallback;
+                normalized.sections = normalized.sections && typeof normalized.sections === 'object'
+                    ? normalized.sections
+                    : {};
+                Object.keys(USER_PROFILE_SECTIONS).forEach(key => {
+                    if (!Array.isArray(normalized.sections[key])) normalized.sections[key] = [];
+                });
+                normalized.manual_basic = normalized.manual_basic && typeof normalized.manual_basic === 'object'
+                    ? normalized.manual_basic
+                    : {};
+                Object.keys(MANUAL_BASIC_PROFILE_FIELDS).forEach(key => {
+                    if (normalized.manual_basic[key] === undefined || normalized.manual_basic[key] === null) {
+                        normalized.manual_basic[key] = '';
+                    } else {
+                        normalized.manual_basic[key] = String(normalized.manual_basic[key]).trim();
+                    }
+                });
+                if (!Array.isArray(normalized.uncategorized_candidates)) {
+                    normalized.uncategorized_candidates = [];
+                }
+                return normalized;
             }
 
             let userProfileLoadFailed = false;
@@ -1686,19 +1800,14 @@
                         try {
                             const backup = JSON.parse(localStorage.getItem(STORAGE_KEYS.LAST_GOOD_BACKUP) || '{}');
                             if (backup.memory_user_profile && backup.memory_user_profile.value) {
-                                return backup.memory_user_profile.value;
+                                return normalizeUserProfile(backup.memory_user_profile.value, fallback);
                             }
                         } catch (backupError) { /* preserve corrupt profile source */ }
                         userProfileLoadFailed = true;
                     }
                     return fallback;
                 }
-                const profile = parsed.value && typeof parsed.value === 'object' ? parsed.value : fallback;
-                profile.sections = profile.sections && typeof profile.sections === 'object' ? profile.sections : {};
-                Object.keys(USER_PROFILE_SECTIONS).forEach(key => {
-                    if (!Array.isArray(profile.sections[key])) profile.sections[key] = [];
-                });
-                return profile;
+                return normalizeUserProfile(parsed.value, fallback);
             }
 
             let memoryUserProfile = loadUserProfile();
@@ -3412,6 +3521,29 @@
                 });
             }
 
+            function mergeUserProfileCandidate(text, messageId, timestamp) {
+                const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+                if (!clean || clean.length < 3) return;
+                const list = Array.isArray(memoryUserProfile.uncategorized_candidates)
+                    ? memoryUserProfile.uncategorized_candidates
+                    : (memoryUserProfile.uncategorized_candidates = []);
+                const existing = list.find(item => profileTextSimilarity(item.text, clean) > 0.72);
+                if (existing) {
+                    if (clean.length > existing.text.length) existing.text = clean;
+                    existing.updated_at = timestamp || Date.now();
+                    existing.source_message_ids = Array.from(new Set((existing.source_message_ids || []).concat(messageId || []))).slice(-20);
+                    return;
+                }
+                list.push({
+                    id: 'profile_uncategorized_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+                    text: clean,
+                    created_at: timestamp || Date.now(),
+                    updated_at: timestamp || Date.now(),
+                    source_message_ids: messageId ? [messageId] : [],
+                });
+                if (list.length > 80) list.splice(0, list.length - 80);
+            }
+
             function updateUserProfileFromArchived(messages) {
                 try {
                     (messages || []).filter(msg => msg && msg.role === 'user' && msg.content).forEach(msg => {
@@ -3422,8 +3554,11 @@
                         if (/经常|总是|反复|每次|常见|容易|卡住|问题|行为模式/i.test(text)) matched.push('common_patterns');
                         if (/AI助手|记忆系统|话题|当前|现在|已经|完成|进行中|待处理|版本/i.test(text)) matched.push('ai_project_status');
                         if (/不要重复|不用再解释|请记住|背景|之前说过|一直以来/i.test(text)) matched.push('background_information');
-                        if (matched.length === 0) matched.push('background_information');
-                        matched.forEach(section => mergeUserProfileItem(section, text, msg.id, msg.timestamp));
+                        if (matched.length === 0) {
+                            mergeUserProfileCandidate(text, msg.id, msg.timestamp);
+                        } else {
+                            matched.forEach(section => mergeUserProfileItem(section, text, msg.id, msg.timestamp));
+                        }
                     });
                     memoryUserProfile.updated_at = Date.now();
                     saveUserProfile();
@@ -3434,11 +3569,71 @@
 
             function getUserProfileSummary() {
                 const lines = [];
+                const manualEntries = Object.entries(MANUAL_BASIC_PROFILE_FIELDS)
+                    .map(([key, label]) => ({ label, value: String((memoryUserProfile.manual_basic || {})[key] || '').trim() }))
+                    .filter(item => item.value);
+                if (manualEntries.length) {
+                    lines.push('手动填写基础画像：\n' + manualEntries.map(item => '- ' + item.label + '：' + item.value).join('\n'));
+                }
                 Object.entries(USER_PROFILE_SECTIONS).forEach(([key, label]) => {
                     const items = (memoryUserProfile.sections[key] || []).slice(-8);
                     if (items.length) lines.push(label + '：\n' + items.map(item => '- ' + item.text).join('\n'));
                 });
                 return lines.join('\n');
+            }
+
+            function getManualBasicProfileEntries() {
+                return Object.entries(MANUAL_BASIC_PROFILE_FIELDS)
+                    .map(([key, label]) => ({
+                        key,
+                        label,
+                        value: String((memoryUserProfile.manual_basic || {})[key] || '').trim(),
+                    }))
+                    .filter(item => item.value);
+            }
+
+            function renderManualBasicProfileEditor() {
+                const basic = memoryUserProfile.manual_basic || {};
+                const valueOf = key => escapeHTML(String(basic[key] || ''));
+                const selected = value => basic.technical_background === value ? ' selected' : '';
+                return [
+                    '<div class="profile-basic-editor" id="profileBasicEditor">',
+                    '<label>称呼<input type="text" data-profile-field="display_name" value="' + valueOf('display_name') + '" placeholder="希望 AI 怎么叫你"></label>',
+                    '<label>时区/常用时间<input type="text" data-profile-field="timezone" value="' + valueOf('timezone') + '" placeholder="例如：北京时间 / Asia/Shanghai"></label>',
+                    '<label>技术背景<select data-profile-field="technical_background">',
+                    '<option value="">选择技术背景</option>',
+                    '<option value="非技术"' + selected('非技术') + '>非技术</option>',
+                    '<option value="前端"' + selected('前端') + '>前端</option>',
+                    '<option value="后端"' + selected('后端') + '>后端</option>',
+                    '<option value="全栈"' + selected('全栈') + '>全栈</option>',
+                    '<option value="产品"' + selected('产品') + '>产品</option>',
+                    '<option value="设计"' + selected('设计') + '>设计</option>',
+                    '<option value="其他"' + selected('其他') + '>其他</option>',
+                    '</select></label>',
+                    '<label>当前主要项目<input type="text" data-profile-field="current_project" value="' + valueOf('current_project') + '" placeholder="例如：Aether / 记忆系统"></label>',
+                    '<label>当前目标<textarea data-profile-field="current_goal" placeholder="正在做什么，最近优先推进什么">' + valueOf('current_goal') + '</textarea></label>',
+                    '<label>不希望重复解释的背景<textarea data-profile-field="stable_background" placeholder="长期稳定、已经反复说明过的背景">' + valueOf('stable_background') + '</textarea></label>',
+                    '<div class="profile-basic-actions">',
+                    '<button type="button" data-profile-action="cancel">取消</button>',
+                    '<button type="button" class="primary" data-profile-action="save">保存</button>',
+                    '</div>',
+                    '</div>',
+                ].join('');
+            }
+
+            function saveManualBasicProfileFromPanel() {
+                const editor = $('#profileBasicEditor');
+                if (!editor) return;
+                const next = { ...(memoryUserProfile.manual_basic || {}) };
+                editor.querySelectorAll('[data-profile-field]').forEach(input => {
+                    next[input.dataset.profileField] = String(input.value || '').replace(/\s+/g, ' ').trim();
+                });
+                memoryUserProfile.manual_basic = next;
+                memoryUserProfile.updated_at = Date.now();
+                saveUserProfile();
+                isUserProfileEditorOpen = false;
+                updateMemoryPanel();
+                showToast('基础画像已保存');
             }
 
             function buildApiConversationMessages() {
@@ -4634,7 +4829,18 @@
                 if (memUserProfile) {
                     const profileCount = Object.keys(USER_PROFILE_SECTIONS).reduce((count, key) =>
                         count + (memoryUserProfile.sections[key] || []).length, 0);
-                    let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条）</h4>';
+                    const manualEntries = getManualBasicProfileEntries();
+                    let profileHTML = '<h4><span class="dot dot-long"></span>用户画像（' + profileCount + '条）' +
+                        '<span class="memory-title-spacer"></span>' +
+                        '<button type="button" class="profile-ghost-toggle" data-profile-action="toggle" title="编辑基础画像">' +
+                        (isUserProfileEditorOpen ? '收起' : '编辑') + '</button></h4>';
+                    if (isUserProfileEditorOpen) {
+                        profileHTML += renderManualBasicProfileEditor();
+                    }
+                    manualEntries.forEach(item => {
+                        profileHTML += '<div class="mem-item">' + escapeHTML(item.value) +
+                            '<div class="mem-meta">手动基础画像 · ' + escapeHTML(item.label) + '</div></div>';
+                    });
                     Object.entries(USER_PROFILE_SECTIONS).forEach(([key, label]) => {
                         const items = (memoryUserProfile.sections[key] || []).slice(-2).reverse();
                         items.forEach(item => {
@@ -4648,7 +4854,9 @@
                     if (errorLog.length) {
                         profileHTML += '<div class="empty-hint">最近整理失败：' + escapeHTML(errorLog[0].type) + ' · ' + escapeHTML(errorLog[0].message) + '</div>';
                     }
-                    if (!profileCount) profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
+                    if (!profileCount && !manualEntries.length && !isUserProfileEditorOpen) {
+                        profileHTML += '<div class="empty-hint">等待归档早期对话</div>';
+                    }
                     memUserProfile.innerHTML = profileHTML;
                 }
 
@@ -5017,13 +5225,28 @@
                         longImported = Math.max(0, memoryCountsAfterImport.longTerm - memoryCountsBeforeImport.longTerm);
                         volatileImported = Math.max(0, memoryCountsAfterImport.volatile - memoryCountsBeforeImport.volatile);
 
-                        if (imported.userProfile && imported.userProfile.sections) {
+                        if (imported.userProfile && (imported.userProfile.sections || imported.userProfile.manual_basic)) {
                             userProfileLoadFailed = false;
+                            if (imported.userProfile.manual_basic && typeof imported.userProfile.manual_basic === 'object') {
+                                const manualImportCount = Object.keys(MANUAL_BASIC_PROFILE_FIELDS)
+                                    .filter(key => String(imported.userProfile.manual_basic[key] || '').trim()).length;
+                                memoryUserProfile.manual_basic = {
+                                    ...(memoryUserProfile.manual_basic || {}),
+                                    ...Object.keys(MANUAL_BASIC_PROFILE_FIELDS).reduce((result, key) => {
+                                        result[key] = String(imported.userProfile.manual_basic[key] || '').trim();
+                                        return result;
+                                    }, {}),
+                                };
+                                profileImported += manualImportCount;
+                            }
                             Object.keys(USER_PROFILE_SECTIONS).forEach(section => {
-                                (imported.userProfile.sections[section] || []).forEach(item => {
+                                ((imported.userProfile.sections || {})[section] || []).forEach(item => {
                                     mergeUserProfileItem(section, item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
                                     profileImported += 1;
                                 });
+                            });
+                            (imported.userProfile.uncategorized_candidates || []).forEach(item => {
+                                mergeUserProfileCandidate(item.text || item.content, (item.source_message_ids || [])[0], item.updated_at);
                             });
                             memoryUserProfile.updated_at = Date.now();
                             saveUserProfile();
@@ -5099,6 +5322,21 @@
             }
 
             sidebarContent.addEventListener('click', function(e) {
+                const profileAction = e.target.closest('[data-profile-action]');
+                if (profileAction && sidebarContent.contains(profileAction)) {
+                    const action = profileAction.dataset.profileAction;
+                    if (action === 'toggle') {
+                        isUserProfileEditorOpen = !isUserProfileEditorOpen;
+                        updateMemoryPanel();
+                    } else if (action === 'cancel') {
+                        isUserProfileEditorOpen = false;
+                        updateMemoryPanel();
+                    } else if (action === 'save') {
+                        saveManualBasicProfileFromPanel();
+                    }
+                    return;
+                }
+
                 const topicToggle = e.target.closest('.topic-list-toggle');
                 if (topicToggle && sidebarContent.contains(topicToggle)) {
                     isTopicPanelExpanded = !isTopicPanelExpanded;
