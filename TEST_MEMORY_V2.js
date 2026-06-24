@@ -112,6 +112,7 @@ function testMemoryWriteGuard() {
         () => manager.addLongTermFact('测试', '禁止直写'),
         () => manager.addPlan('测试', '禁止直写'),
         () => manager.addTemporaryEvent('禁止直写'),
+        () => manager.parseVisibleMemoryUpdate('已存入波动记忆：禁止直写'),
         () => manager.updateMemory({ scope: 'all', content: 'x' }, { content: 'y' }),
         () => manager.removeMemory({ scope: 'all', content: 'x' }),
     ];

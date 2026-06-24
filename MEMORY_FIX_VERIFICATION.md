@@ -144,12 +144,11 @@ if (applyMemoryUpdate) {
 
 **处理流程：**
 1. `renderMessage('ai', aiResponse, timestamp, { applyMemoryUpdate: true })`
-2. `memorySystem.parseMemoryUpdate(aiResponse)`
+2. `parseAIResponseMemoryUpdate(aiResponse)`
 3. 正则表达式提取 JSON: `{"basicInfo": {"age": 28, "job": "程序员"}, ...}`
-4. 调用 `updateBasicInfo('age', 28)` 和 `updateBasicInfo('job', '程序员')`
-5. 调用 `addShortTerm('用户28岁程序员', 'ai_extracted')`
-6. 调用 `_saveAll()` 保存到 localStorage
-7. 侧边栏显示更新的记忆内容
+4. 调用 `memorySystem._applyMemoryData(...)`
+5. `_applyMemoryData` 授权内部写入并调用 `_saveAll()` 保存到 localStorage
+6. 侧边栏显示更新的记忆内容
 
 ---
 

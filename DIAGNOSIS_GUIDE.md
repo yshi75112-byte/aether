@@ -95,18 +95,18 @@ console.log('🔍 [DEBUG] 是否包含 MEMORY_UPDATE 标记:', content.includes(
 在浏览器控制台运行：
 
 ```javascript
-// 测试短期记忆
-window.memorySystem.addShortTerm('用户是一个程序员', 'test');
-
-// 测试基本信息
-window.memorySystem.updateBasicInfo('age', 28);
-window.memorySystem.updateBasicInfo('job', '工程师');
-
-// 测试计划
-window.memorySystem.addPlan('学习计划', '每天学习1小时Python');
-
-// 测试临时事件
-window.memorySystem.addTemporaryEvent('今天下午3点有会议', '2026-05-30T15:00:00');
+window.memorySystem._applyMemoryData({
+  basicInfo: {
+    age: 28,
+    job: '工程师'
+  },
+  plans: [
+    { type: '学习计划', content: '每天学习1小时Python' }
+  ],
+  temporaryEvents: [
+    { content: '今天下午3点有会议', estimatedExpiry: '2026-05-30T15:00:00' }
+  ]
+}, 'test/manual');
 
 // 更新面板显示
 updateMemoryPanel();

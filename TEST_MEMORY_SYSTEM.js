@@ -12,19 +12,28 @@ console.log('✅ parseMemoryUpdate 函数存在:', typeof window.memorySystem.pa
 
 // 测试 2: 清空旧数据并写入新的记忆
 console.log('\n【测试 2】写入新的记忆数据');
-window.memorySystem.longTerm.basicInfo = {};
-window.memorySystem.longTerm.preferences = [];
-window.memorySystem.longTerm.expenses = [];
-window.memorySystem._saveAll();
+window.memorySystem._applyMemoryData({
+    clearAll: true,
+}, 'test/reset');
 
-// 添加测试数据
-window.memorySystem.updateBasicInfo('name', '张三');
-window.memorySystem.updateBasicInfo('age', 30);
-window.memorySystem.updateBasicInfo('job', '前端工程师');
-window.memorySystem.addPreference('编程语言', 'TypeScript');
-window.memorySystem.addPreference('饮品', '咖啡');
-window.memorySystem.addPlan('技能提升', '学习 TypeScript 高级特性');
-window.memorySystem.addTemporaryEvent('下周技术分享', '2026-06-05');
+// 添加测试数据：所有写入统一走 _applyMemoryData 入口
+window.memorySystem._applyMemoryData({
+    basicInfo: {
+        name: '张三',
+        age: 30,
+        job: '前端工程师',
+    },
+    preferences: [
+        { category: '编程语言', detail: 'TypeScript' },
+        { category: '饮品', detail: '咖啡' },
+    ],
+    plans: [
+        { type: '技能提升', content: '学习 TypeScript 高级特性' },
+    ],
+    temporaryEvents: [
+        { content: '下周技术分享', estimatedExpiry: '2026-06-05' },
+    ],
+}, 'test/seed');
 
 console.log('✅ 已添加基本信息（姓名、年龄、工作）');
 console.log('✅ 已添加喜好（2项）');
@@ -61,10 +70,12 @@ const testMemoryMarker = `用户告诉我新信息<!--MEMORY_UPDATE:{
 }-->`;
 
 // 清空一些数据用于测试
-window.memorySystem.longTerm.basicInfo.hometown = undefined;
+window.memorySystem._applyMemoryData({
+  removeBasicInfo: 'hometown',
+}, 'test/reset-hometown');
 
 // 调用解析函数
-window.memorySystem.parseMemoryUpdate(testMemoryMarker);
+window.parseAIResponseMemoryUpdate(testMemoryMarker);
 
 // 验证是否正确解析
 const afterParse = JSON.parse(localStorage.getItem('mem_long_term') || '{}');
