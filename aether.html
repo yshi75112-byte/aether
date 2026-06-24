@@ -1361,6 +1361,7 @@
             let conversationHistory = []; // 最近对话消息，旧消息会压缩到 conversationSummary
             let conversationSummary = '';
             let messageSequence = 0;
+            let pendingMessageAfterApiKey = '';
             const MAX_STORED_CHAT_MESSAGES = 120;
             const TOPIC_PANEL_PREVIEW_LIMIT = 8;
             let isTopicPanelExpanded = false;
@@ -4293,13 +4294,21 @@
                 if (!userText) return;
 
                 const settings = loadSettings();
+                const focusTaskName = userText.length > 36 ? userText.slice(0, 36) + '...' : userText;
+
+                if (!settings.apiKey) {
+                    pendingMessageAfterApiKey = userText;
+                    showToast('⚠ 请先在设置中配置API Key，保存后将继续发送');
+                    openSettings();
+                    setActiveFocus('配置 API Key', '等待用户保存设置', ['发送消息']);
+                    return;
+                }
 
                 // 禁用输入
                 isProcessing = true;
                 sendBtn.disabled = true;
                 userInput.disabled = true;
                 setThinkingState(true);
-                const focusTaskName = userText.length > 36 ? userText.slice(0, 36) + '...' : userText;
                 setActiveFocus(focusTaskName, '接收用户输入', ['新任务', '重复发送']);
 
                 // 渲染用户消息
@@ -4382,22 +4391,6 @@
                     restoreInputAfterProcessing();
                     enqueueTopicMemory();
                     setActiveFocus('空闲', '等待输入', []);
-                    return;
-                }
-
-                if (!settings.apiKey) {
-                    showToast('⚠ 请先在设置中配置API Key');
-                    openSettings();
-                    commitTurnClosedLoop(userMsgForHistory, null, {
-                        stage: 'missing-api-key-turn',
-                        organizeTopic: false,
-                        updateState: false,
-                        expectAssistant: false,
-                        warn: true,
-                    });
-                    restoreInputAfterProcessing({ focus: false });
-                    enqueueTopicMemory();
-                    setActiveFocus('配置 API Key', '等待用户保存设置', ['发送消息']);
                     return;
                 }
 
@@ -4818,6 +4811,10 @@
             });
 
             saveSettings.addEventListener('click', function() {
+                const shouldResumePendingMessage = !appSettings.apiKey
+                    && !!apiKeyInput.value.trim()
+                    && !!pendingMessageAfterApiKey
+                    && userInput.value.trim() === pendingMessageAfterApiKey;
                 const newSettings = {
                     apiKey: apiKeyInput.value.trim(),
                     rememberApiKey: persistApiKeyToggle.checked,
@@ -4836,6 +4833,14 @@
                 updateMemoryPanel();
                 // 更新自动保存定时器
                 updateAutoSaveTimer();
+
+                if (shouldResumePendingMessage) {
+                    const messageToResume = pendingMessageAfterApiKey;
+                    pendingMessageAfterApiKey = '';
+                    userInput.value = messageToResume;
+                    userInput.style.height = 'auto';
+                    setTimeout(sendMessage, 0);
+                }
             });
 
             // ==================== 辅助函数 ====================
